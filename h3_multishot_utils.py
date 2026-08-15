@@ -309,6 +309,121 @@ def _wav_for_vae(audio_vae, audio, what):
     return w3[:1], vae_sr
 
 
+def _encode_ref_audio_compat(mmh3, audio_vae, audio):
+    """Encode MiniMax H3 reference audio across ComfyUI API versions.
+
+    KursatAs - 2026-08-15 18:37: latest ComfyUI ref-audio compatibility.
+
+    Older ComfyUI exposed MiniMaxH3ReferenceToVideo._encode_ref_audio; newer
+    builds removed it. Keep using the native helper when present, otherwise
+    mirror its relevant behavior locally.
+    """
+    fn = getattr(mmh3.MiniMaxH3ReferenceToVideo, "_encode_ref_audio", None)
+    if fn is not None:
+        return fn(audio_vae, audio)
+
+    waveform, _sr = _wav_for_vae(audio_vae, audio, "ref_audio")
+    z = audio_vae.encode(waveform.movedim(1, -1))
+    return z, z.shape[-1]
+
+
+def _is_solattn_h3_layout_wrapper(fn):
+    """Is PackedLayout.__init__ wrapped by ComfyUI-SolAttn_triton's H3 hook?"""
+    where = str(getattr(fn, "__module__", ""))
+    globs = getattr(fn, "__globals__", {}) or {}
+    return (where.endswith("._morton_h3")
+            and "solattn" in where.lower()
+            and "_SPANS" in globs
+            and "_video_span" in globs)
+
+
+def _solattn_inner_layout_init(fn):
+    """Best-effort unwrap of Sol-Attn's closure-held stock constructor."""
+    for cell in getattr(fn, "__closure__", ()) or ():
+        try:
+            val = cell.cell_contents
+        except ValueError:
+            continue
+        if callable(val) and getattr(val, "__name__", "") == "__init__":
+            return val
+    return None
+
+
+def _h3_motion_context_allow_solattn_layout(_mc_cls):
+    """Allow H3 Motion-Context to compose with Sol-Attn's neutral layout hook.
+
+    KursatAs - 2026-08-15 18:52: latest ComfyUI/Sol-Attn context_pin compat.
+
+    Motion-Context normally refuses any foreign PackedLayout wrapper. Sol-Attn's
+    H3 wrapper is different: it calls the original constructor unchanged and
+    only records the target video span for its attention hook. Letting
+    Motion-Context install over that wrapper preserves both behaviors.
+    """
+    try:
+        import comfy.ldm.minimax.model as _mmodel
+        import sys as _sys
+
+        _layout_cls = getattr(_mmodel, "PackedLayout", None)
+        _init = getattr(_layout_cls, "__init__", None)
+        if (_init is None
+                or getattr(_init, "_h3_motion_context_layout_patch", False)
+                or not _is_solattn_h3_layout_wrapper(_init)):
+            return
+
+        _mc_mod = _sys.modules.get(getattr(_mc_cls, "__module__", ""))
+        _is_applied = getattr(_mc_mod, "_layout_patch_applied", None)
+        if callable(_is_applied) and _is_applied():
+            return
+
+        _apply = getattr(_mc_mod, "_apply_layout_patch", None)
+        _g = getattr(_apply, "__globals__", None)
+        if not callable(_apply) or not isinstance(_g, dict):
+            return
+
+        _orig_already = _g.get("_already_patched")
+        _orig_probe = _g.get("_probe_frame_count")
+        if not callable(_orig_already):
+            return
+
+        def _already_patched_solattn_ok():
+            _cur = getattr(getattr(_mmodel, "PackedLayout", None),
+                           "__init__", None)
+            if _is_solattn_h3_layout_wrapper(_cur):
+                return None
+            return _orig_already()
+
+        def _probe_frame_count_solattn_aware(init):
+            if callable(_orig_probe) and _is_solattn_h3_layout_wrapper(init):
+                _inner = _solattn_inner_layout_init(init)
+                if _inner is not None:
+                    return _orig_probe(_inner)
+            return _orig_probe(init) if callable(_orig_probe) else False
+
+        _g["_already_patched"] = _already_patched_solattn_ok
+        if callable(_orig_probe):
+            _g["_probe_frame_count"] = _probe_frame_count_solattn_aware
+        try:
+            _ok = _apply()
+        finally:
+            _g["_already_patched"] = _orig_already
+            if callable(_orig_probe):
+                _g["_probe_frame_count"] = _orig_probe
+
+        if _ok:
+            print("[H3Memory] context_pin: Motion-Context layout patch "
+                  "stacked over Sol-Attn's H3 layout span wrapper.",
+                  flush=True)
+        else:
+            print("[H3Memory] context_pin: Motion-Context/Sol-Attn layout "
+                  "compatibility pre-apply returned false; Motion-Context "
+                  "will report the exact reason.", flush=True)
+    except Exception as _e:
+        print("[H3Memory] context_pin: could not pre-apply "
+              "Motion-Context/Sol-Attn layout compatibility (%s); "
+              "falling back to Motion-Context's own checks" % _e,
+              flush=True)
+
+
 def _write_shot_mp4(imgs, wav, sr, prefix, label, tag):
     """Write one decoded shot to disk immediately, and never let that kill
     the render.
@@ -3578,8 +3693,9 @@ class H3MultishotMemorySampler:
                 fr = mmh3._resize(clip_frames, cw, ch, "disabled")
                 fr = fr[:_jb_grid(fr.shape[0])]
                 z = video_vae.encode(fr)
-                a_lat, a_t = mmh3.MiniMaxH3ReferenceToVideo._encode_ref_audio(
-                    audio_vae, clip_audio)
+                # KursatAs - 2026-08-15 18:37: route through ref-audio compat.
+                a_lat, a_t = _encode_ref_audio_compat(
+                    mmh3, audio_vae, clip_audio)
                 # the soundtrack takes its own <Audio j>, emitted before <Video k>
                 ref_items.append({"type": "audio"})
                 idx = list(range(0, fr.shape[0], mmh3.FPS // 2))
@@ -3882,6 +3998,8 @@ class H3MultishotMemorySampler:
                            if _fork else
                            " If you installed a fork instead, note that forks "
                            "may leave that node id to upstream on purpose."))
+                # KursatAs - 2026-08-15 18:52: allow context_pin with Sol-Attn.
+                _h3_motion_context_allow_solattn_layout(_mc_cls)
                 # The pin is raw latents from the PREVIOUS shot, sampled at
                 # full resolution. Pass 1 runs on a smaller grid, so the pin
                 # has to be resampled onto that grid or the shapes simply do
