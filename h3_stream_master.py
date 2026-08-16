@@ -125,7 +125,8 @@ class ShotStreamWriter:
             cg = (s_target / med_s.clamp_min(1e-4)).clamp(0.70, 1.43)
         return lg, cg, luma
 
-    def finalize(self, master_path, mode, waveform, sr):
+    def finalize(self, master_path, mode, waveform, sr,
+                 prompt=None, extra_pnginfo=None):
         """Re-stream temps through the gains into one encoder."""
         import torch
         if self.pending is not None:
@@ -158,8 +159,22 @@ class ShotStreamWriter:
                "-s", "%dx%d" % (w, h), "-r", "%.6f" % self.fps, "-i", "-",
                "-i", wav_path,
                "-c:v", "libx264", "-crf", "10", "-preset", "veryfast",
-               "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "320k",
-               "-shortest", master_path]
+               "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "320k"]
+        # same container tags SaveVideo writes, so the master itself can be
+        # dropped onto a ComfyUI canvas to recover the graph
+        import json as _json
+        _tagged = False
+        if prompt is not None:
+            cmd += ["-metadata", "prompt=" + _json.dumps(prompt)]
+            _tagged = True
+        if extra_pnginfo is not None:
+            for _k, _v in extra_pnginfo.items():
+                cmd += ["-metadata", "%s=%s" % (_k, _json.dumps(_v))]
+            _tagged = True
+        if _tagged:
+            # mp4 silently drops custom tag keys without this movflag
+            cmd += ["-movflags", "use_metadata_tags"]
+        cmd += ["-shortest", master_path]
         enc = subprocess.Popen(cmd, stdin=subprocess.PIPE)
         off = 0
         for s in self.shots:

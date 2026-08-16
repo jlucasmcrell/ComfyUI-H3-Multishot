@@ -37,7 +37,7 @@ import os
 import urllib.error
 import urllib.request
 
-_PACK_VER = "2.5.4"
+_PACK_VER = "2.5.5"
 _ROUTE = "/h3multishot/encode"
 
 

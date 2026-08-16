@@ -843,6 +843,30 @@ def _install_auto_reserve(patcher, model_name):
                       "render crawls, lower frames_per_shot or resolution, free "
                       "the other ComfyUI instance, or load a smaller DiT."
                       % (_w / 2**30, _free / 2**30, reserve / 2**30), flush=True)
+                # Driver headroom applies HERE too. Reported free is misleading
+                # in this branch (resident weights count as used but get
+                # reused), so the peak still lands wherever weights+pool put
+                # it - measured 2026-08-16 on a 5090: the tight requeue of a
+                # shape whose first run peaked at a healthy 29.4/32.6 sat at
+                # 31.5/32.6 and crawled at 142 W. The main headroom block below
+                # is gated on _cap > 0 and its clamp uses reported free, both
+                # wrong for this regime, so bump against TOTAL directly:
+                # streaming ~2 GB more weights is cheap, the last few percent
+                # of VRAM are not.
+                try:
+                    _total_t = _cm.get_total_memory(_dev)
+                except Exception:
+                    _total_t = _free
+                _bump = max(0, int(_total_t * 0.09) - _AUTO_KEEPOUT)
+                if _bump:
+                    reserve += _bump
+                    how += (" | +driver headroom (tight) +%.1f GB"
+                            % (_bump / 2**30))
+                    print("[H3AutoReserve] driver headroom (tight path): "
+                          "raising the reserve by %.1f GB so extra weights "
+                          "stream instead of the peak riding the last few "
+                          "percent of VRAM (that zone measured 2-12x slower)."
+                          % (_bump / 2**30), flush=True)
             elif reserve > _cap:
                 _was = reserve
                 _card_max = max(int(_free - _AUTO_KEEPOUT), _AUTO_MIN_POOL)
@@ -3186,7 +3210,9 @@ class H3MultishotMemorySampler:
                            "only: join_blend, join_fx and color_level=scene "
                            "fall back to the RAM path with a printed reason. "
                            "Needs ffmpeg on PATH."}),
-        }}
+        },
+            # hidden inputs are not widgets, so saved workflows are unaffected
+            "hidden": {"prompt": "PROMPT", "extra_pnginfo": "EXTRA_PNGINFO"}}
 
     RETURN_TYPES = ("IMAGE", "AUDIO", "INT", "LATENT", "LATENT", "INT",
                     "STRING")
@@ -3254,7 +3280,7 @@ class H3MultishotMemorySampler:
             master_normalize="luma+contrast", pin_frames="22", pin_noise=0.0,
             pin_renorm=False, reference_subjects="",
             reference_video=None, reference_video_audio=None,
-            low_ram_master=False):
+            low_ram_master=False, prompt=None, extra_pnginfo=None):
         # two_pass_upscale is REMOVED as of 2.1.3. It spatially interpolated
         # the raw latent between passes, and H3's latent is not a spatially
         # smooth representation - interpolated values land off-manifold and
@@ -4808,7 +4834,8 @@ class H3MultishotMemorySampler:
             while os.path.exists(os.path.join(_mdir, "master_%05d.mp4" % _i)):
                 _i += 1
             _mpath = os.path.join(_mdir, "master_%05d.mp4" % _i)
-            _stream_writer.finalize(_mpath, master_normalize, waveform, sr)
+            _stream_writer.finalize(_mpath, master_normalize, waveform, sr,
+                                    prompt=prompt, extra_pnginfo=extra_pnginfo)
             _ph = torch.zeros((1, _stream_writer.shots[0]["h"],
                                _stream_writer.shots[0]["w"], 3),
                               dtype=torch.half)

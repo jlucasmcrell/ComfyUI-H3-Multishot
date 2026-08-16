@@ -571,7 +571,7 @@
       "mode": 0,
       "properties": {},
       "widgets_values": [
-        "## MiniMax-H3 Seamless Chain v2.5.4\n\n**Updates & guides**\n- [Civitai page + articles](https://civitai.com/models/2833322)\n- [HuggingFace workflow repo](https://huggingface.co/joeygambino/MiniMax-H3-Multishot-Workflow)\n- [GitHub](https://github.com/jlucasmcrell/ComfyUI-H3-Multishot)\n\n**Model files (DiT)**\n- [curve GGUFs](https://huggingface.co/joeygambino/MiniMax-H3-curve-GGUF)\n- [comfy-native ref2va](https://civitai.com/models/2857809)\n\n**Text encoder + VAEs**\n- [encoder GGUF](https://huggingface.co/joeygambino/MiniMax-H3-encoder-GGUF)\n- [Comfy-Org/MiniMax-H3](https://huggingface.co/Comfy-Org/MiniMax-H3)\n\nNodes: search **H3 Multishot** in ComfyUI-Manager\n\n*This is CORE: the zero-options variant.*"
+        "## MiniMax-H3 Seamless Chain v2.5.5\n\n**Updates & guides**\n- [Civitai page + articles](https://civitai.com/models/2833322)\n- [HuggingFace workflow repo](https://huggingface.co/joeygambino/MiniMax-H3-Multishot-Workflow)\n- [GitHub](https://github.com/jlucasmcrell/ComfyUI-H3-Multishot)\n\n**Model files (DiT)**\n- [curve GGUFs](https://huggingface.co/joeygambino/MiniMax-H3-curve-GGUF)\n- [comfy-native ref2va](https://civitai.com/models/2857809)\n\n**Text encoder + VAEs**\n- [encoder GGUF](https://huggingface.co/joeygambino/MiniMax-H3-encoder-GGUF)\n- [Comfy-Org/MiniMax-H3](https://huggingface.co/Comfy-Org/MiniMax-H3)\n\nNodes: search **H3 Multishot** in ComfyUI-Manager\n\n*This is CORE: the zero-options variant.*"
       ],
       "color": "#432",
       "bgcolor": "#653"
