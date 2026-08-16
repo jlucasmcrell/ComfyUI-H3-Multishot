@@ -54,7 +54,14 @@ def _apply(model, class_name, url, label, **kw):
                 args[name] = s[0][0]
     out = fn(**args)
     print("[H3SpeedBoosters] %s applied." % label, flush=True)
-    return out[0] if isinstance(out, tuple) else out
+    if isinstance(out, tuple):
+        return out[0]
+    # V3-schema nodes (ComfyUI 0.33.1+) return a NodeOutput carrying the
+    # values in .args - passing it through as the MODEL crashes downstream
+    a = getattr(out, "args", None)
+    if isinstance(a, tuple):
+        return a[0] if a else model
+    return out
 
 
 class H3SpeedBoosters:
