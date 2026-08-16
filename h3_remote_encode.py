@@ -37,7 +37,7 @@ import os
 import urllib.error
 import urllib.request
 
-_PACK_VER = "2.5.3"
+_PACK_VER = "2.5.4"
 _ROUTE = "/h3multishot/encode"
 
 
@@ -176,6 +176,25 @@ _register_route()
 # Client side: the CLIP proxy.
 # ---------------------------------------------------------------------------
 
+class _NoOpTEModel:
+    def to(self, *a, **k):
+        return self
+
+
+class _RemoteTEPatcher:
+    """Just enough .patcher for the samplers' TE-offload housekeeping.
+
+    The samplers probe clip.patcher.load_device to decide whether the text
+    encoder shares the DiT's card and must be offloaded between shots. A
+    remote encoder occupies no local memory at all, which is exactly the
+    "separate device, nothing to reclaim" branch - load_device "remote"
+    routes it there, and the no-op model absorbs any offload .to() calls.
+    """
+    load_device = "remote"
+    offload_device = "remote"
+    model = _NoOpTEModel()
+
+
 class _RemoteClipProxy:
     """Answers the two calls the H3 samplers make, remotely.
 
@@ -192,6 +211,7 @@ class _RemoteClipProxy:
         self._clip_type = clip_type
         self._timeout = timeout
         self._cache_dir = cache_dir
+        self.patcher = _RemoteTEPatcher()
 
     # -- the supported surface ------------------------------------------------
     def tokenize(self, prompt, **kwargs):

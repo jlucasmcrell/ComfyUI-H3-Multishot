@@ -4,7 +4,7 @@
 
 MiniMax-H3 natively generates blocks of roughly 10-15 seconds. This pack chains those blocks into a scene of arbitrary length and joins them so the result reads as a single unedited camera take rather than a cut sequence. It ships two independent chaining mechanisms, a complete single-purpose workflow (plus a variant with zero third-party dependencies), a dual-format model loader (safetensors + GGUF), and the GGUF architecture patch H3 needs.
 
-Current release: **v2.5.3 - MiniMax-H3 Seamless Chain: the memory release**.
+Current release: **v2.5.4 - MiniMax-H3 Seamless Chain: the memory release**.
 
 - GitHub: <https://github.com/jlucasmcrell/ComfyUI-H3-Multishot>
 - Civitai: <https://civitai.com/models/2833322>
@@ -121,7 +121,7 @@ no Motion-Context → `continuity=first_frame`.
 
 ---
 
-## 2.5.3 - the memory release: renders that no longer gamble, RAM that no longer runs out
+## 2.5.4 - the memory release: renders that no longer gamble, RAM that no longer runs out
 
 Four new memory systems, all measured, two of them automatic.
 
@@ -165,7 +165,7 @@ A 9 MB tiny decoder turns latents into full-resolution draft frames in about
 smear texture but composition and motion read clearly - built for seed hunts
 and batch triage, never for finals.
 
-### Also in 2.5.3
+### Also in 2.5.4
 
 - **Speed Boosters panel** - Spectrum, TeaCache, block cache and ComfyUI's
   own EasyCache behind switches, each measured (-11% to -29%) and eye-tested,
