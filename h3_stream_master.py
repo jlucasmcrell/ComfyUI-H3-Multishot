@@ -206,6 +206,14 @@ class ShotStreamWriter:
             os.remove(wav_path)
         except OSError:
             pass
+        # the stage dir is per-run and now empty; its tmp_<pid> parent is
+        # shared by runs in this process, so only remove it once it drains
+        import shutil
+        shutil.rmtree(self.dir, ignore_errors=True)
+        try:
+            os.rmdir(os.path.dirname(self.dir))
+        except OSError:
+            pass
         print("[H3StreamMaster] master written: %s (%.1f MB)"
               % (master_path, os.path.getsize(master_path) / 2 ** 20),
               flush=True)
