@@ -267,12 +267,17 @@ class H3AutoRefs:
     @classmethod
     def INPUT_TYPES(cls):
         return {"required": {
-            "prompt_text": ("STRING", {"forceInput": True, "tooltip":
-                "Block-1 text; scanned for character folder names."}),
             "max_per_character": ("INT", {"default": 3, "min": 1, "max": 9,
                 "tooltip": "Images per matched character (sorted order; "
                 "front/three-quarter/profile sets hold identity best)."}),
         }, "optional": {
+            # 2.6.0: optional, so the node can run BEFORE the writer on the
+            # premise alone (wire the scene idea here or into extra_text) -
+            # then `found` can drive the writer's refs_attached and a miss
+            # is known before two minutes of writing are spent.
+            "prompt_text": ("STRING", {"forceInput": True, "tooltip":
+                "Text scanned for character folder names (the premise, or "
+                "the writer's output)."}),
             "refs_root": ("STRING", {"default": "", "tooltip":
                 "Folder holding one subfolder per character. Relative paths "
                 "resolve under input/. Empty = input/h3_refs/."}),
@@ -282,9 +287,14 @@ class H3AutoRefs:
             "overrides": ("STRING", {"default": "", "tooltip":
                 "Folder remaps, e.g. 'rae=rae_night' to swap a "
                 "character's ref set for specific scenes. Comma-separated."}),
-            "on_no_match": (["error", "no_reference"], {"default": "error",
-                "tooltip": "error = stop the run when no character matches "
-                "(an identity render without refs is a wasted render)."}),
+            "on_no_match": (["error", "no_reference"], {"default": "no_reference",
+                "tooltip": "no_reference (default) = warn in the console and "
+                "render WITHOUT photos when no character folder matches; "
+                "the writer is told (found=false) and describes the person "
+                "normally. error = stop the run instead."}),
+            "enabled": ("BOOLEAN", {"forceInput": True, "tooltip":
+                "Wire USE AUTO REFS here. Off = no scan, no photos, "
+                "found=false, and the run continues."}),
             # 2.6.0: the writer may anonymise names (ID_A) or a script may
             # only IMPLY the character; the premise / scene idea almost always
             # names them. Wire the scene-idea text here and both are scanned.
@@ -299,9 +309,12 @@ class H3AutoRefs:
     # size. Wire THIS to the sampler - the per-slot outputs feed a chain of
     # core ImageBatch nodes that crash when a character has fewer photos
     # than the chain expects.
-    RETURN_TYPES = tuple(["IMAGE"] * 9 + ["STRING", "STRING", "IMAGE"])
+    # found (2.6.0, appended last): True when at least one photo was picked.
+    # Wire it to the writer's refs_attached so the writer only points at
+    # photographs that exist.
+    RETURN_TYPES = tuple(["IMAGE"] * 9 + ["STRING", "STRING", "IMAGE", "BOOLEAN"])
     RETURN_NAMES = tuple([f"ref_{i+1}" for i in range(9)]
-                         + ["prompt_out", "report", "refs_batch"])
+                         + ["prompt_out", "report", "refs_batch", "found"])
     FUNCTION = "pick"
     CATEGORY = "video/minimax"
 
@@ -315,13 +328,14 @@ class H3AutoRefs:
         return r
 
     @classmethod
-    def IS_CHANGED(cls, prompt_text, max_per_character, refs_root="",
-                   characters="", overrides="", on_no_match="error",
-                   extra_text=""):
+    def IS_CHANGED(cls, max_per_character, prompt_text="", refs_root="",
+                   characters="", overrides="", on_no_match="no_reference",
+                   extra_text="", enabled=True):
         import os
         root = cls._root(refs_root)
         sig = [str(hash((prompt_text or "") + "|" + (extra_text or ""))),
-               str(max_per_character), characters, overrides, root]
+               str(max_per_character), characters, overrides, root,
+               str(bool(enabled))]
         try:
             for d in sorted(os.listdir(root)):
                 p = os.path.join(root, d)
@@ -332,14 +346,17 @@ class H3AutoRefs:
             pass
         return "|".join(sig)
 
-    def pick(self, prompt_text, max_per_character, refs_root="",
-             characters="", overrides="", on_no_match="error",
-             extra_text=""):
+    def pick(self, max_per_character, prompt_text="", refs_root="",
+             characters="", overrides="", on_no_match="no_reference",
+             extra_text="", enabled=True):
         import os
         import numpy as np
         import torch
         from PIL import Image, ImageOps
 
+        if not enabled:
+            return tuple([None] * self.MAX_SLOTS
+                         + [prompt_text or "", "(auto refs off)", None, False])
         root = self._root(refs_root)
         try:
             dirs = sorted(d for d in os.listdir(root)
@@ -419,9 +436,11 @@ class H3AutoRefs:
             if on_no_match == "error":
                 raise ValueError(msg + " - name the character in the prose, "
                                  "set `characters`, or switch on_no_match.")
-            print(msg + " - continuing WITHOUT references.", flush=True)
+            print(msg + " - continuing WITHOUT references (the writer is "
+                  "told found=false and describes the person normally).",
+                  flush=True)
             return tuple([None] * self.MAX_SLOTS
-                         + [prompt_text, "(no references)", None])
+                         + [prompt_text or "", "(no references)", None, False])
 
         prompt_out = "\n".join(binds) + "\n" + (prompt_text or "")
         report = f"{len(images)} ref(s): " + "; ".join(lines)
@@ -440,7 +459,7 @@ class H3AutoRefs:
                                             "bilinear", "center").movedim(1, -1)
                 fitted.append(im)
             batch = torch.cat(fitted, dim=0)
-        return tuple(out + [prompt_out, report, batch])
+        return tuple(out + [prompt_out, report, batch, True])
 
 
 class H3RefBatch:

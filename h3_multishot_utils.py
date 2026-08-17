@@ -281,6 +281,25 @@ def _at_flatten(wav, house, sr=32000, nfft=2048, max_db=9.0):
     return y.reshape(shape).to(wav.dtype), float(gain_db.abs().max())
 
 
+def _mmh3_encode_ref_audio(audio_vae, audio):
+    """ComfyUI's ref-audio encoder, wherever this ComfyUI keeps it.
+
+    Up to 0.33 it was a staticmethod on MiniMaxH3ReferenceToVideo; master
+    (2026-08) moved it to a module-level _encode_ref_audio. Resolve at call
+    time so neither layout raises AttributeError (GitHub issue #15)."""
+    from comfy_extras import nodes_minimax_h3 as mmh3
+    fn = getattr(mmh3, "_encode_ref_audio", None)
+    if fn is None:
+        fn = getattr(getattr(mmh3, "MiniMaxH3ReferenceToVideo", None),
+                     "_encode_ref_audio", None)
+    if fn is None:
+        raise RuntimeError(
+            "This ComfyUI's nodes_minimax_h3 has no _encode_ref_audio "
+            "(neither module-level nor on MiniMaxH3ReferenceToVideo). "
+            "Update ComfyUI-H3-Multishot, or report the ComfyUI version.")
+    return fn(audio_vae, audio)
+
+
 def _wav_for_vae(audio_vae, audio, what):
     """AUDIO dict -> [1, C, L] waveform at the VAE's own sample rate, stereo.
 
@@ -3990,8 +4009,7 @@ class H3MultishotMemorySampler:
                 fr = mmh3._resize(clip_frames, cw, ch, "disabled")
                 fr = fr[:_jb_grid(fr.shape[0])]
                 z = video_vae.encode(fr)
-                a_lat, a_t = mmh3.MiniMaxH3ReferenceToVideo._encode_ref_audio(
-                    audio_vae, clip_audio)
+                a_lat, a_t = _mmh3_encode_ref_audio(audio_vae, clip_audio)
                 # the soundtrack takes its own <Audio j>, emitted before <Video k>
                 ref_items.append({"type": "audio"})
                 idx = list(range(0, fr.shape[0], mmh3.FPS // 2))

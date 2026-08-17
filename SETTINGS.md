@@ -444,6 +444,8 @@ The nine per-slot outputs `ref_1` ... `ref_9` are still there for graphs that
 route photos individually; `refs_batch` carries every picked photo (up to the
 model's 9-slot cap), so two or three matched characters no longer overflow.
 
+**AutoRefs runs before the writer (2.6.0).** It scans the premise (wire the scene idea into `prompt_text`), is gated by `enabled` (wired from USE AUTO REFS), and its `found` output drives the writer's `refs_attached` - so the writer only points at photographs that actually exist, and a miss is known before any writing happens.
+
 **The writer must not describe the person (2.6.0).** Measured on the same
 seed: with photographs attached, a written identity sentence ("a woman in her
 thirties with dark hair tied back") rendered *that* person; the same prompt
@@ -463,7 +465,7 @@ it must differ from them.
 | `max_per_character` | `3` | Images per matched character. Front / three-quarter / profile sets hold identity best. |
 | `characters` | *(empty)* | Comma-separated folder list that **overrides the scan entirely**. Use it when the prose does not name someone. |
 | `overrides` | *(empty)* | Folder remaps, e.g. `dana=dana_outdoor` to swap a character's set for particular scenes. Clear it afterwards. |
-| `on_no_match` | `error` | `error` stops the run when nothing matches - an identity render without references is a wasted render. `no_reference` continues without them, which is what you want for scenes that have no recurring cast. |
+| `on_no_match` | `no_reference` | `no_reference` (default) warns in the console and renders without photos when nothing matches; the writer is told (`found` = false) and describes the person normally. `error` stops the run instead - and because AutoRefs now runs BEFORE the writer, it stops before the writer spends its minutes. |
 
 **The gotcha worth knowing.** The scan reads the *prose*, so the character must
 be named there. A scene called `09_glyph_reaches_through_the_front_door.txt`

@@ -2,7 +2,7 @@
   "id": "h3-seamless-chain-v1",
   "revision": 0,
   "last_node_id": 69,
-  "last_link_id": 99,
+  "last_link_id": 100,
   "nodes": [
     {
       "id": 28,
@@ -1376,7 +1376,7 @@
           "slot_index": 0,
           "links": [
             67,
-            99
+            76
           ]
         }
       ],
@@ -3752,7 +3752,7 @@
       "title": "H3 EXTEND TAKE - read me",
       "properties": {},
       "widgets_values": [
-        "**EXTEND TAKE - one prompt, one continuous speech, as long as you want.** Type a length into MASTER CONTROLS `take_seconds`; the panel sizes the window for your card (`window` = auto) and the count that fills the time. The writer (join style: extend take) writes ONE speech and cuts it across the windows - no airlock, no settle, no per-shot budgeting. Premise goes in MANUAL SCENE IDEA; one speaker works best. Set the writer's model_name to a model you have (hosted/cloud is best). Known limit: very long takes slowly sharpen - keep takes to about 4 windows for now.\n\n## MiniMax-H3 EXTEND TAKE v2.6.0\n\n**Guides**\n- [The 5-minute guide](https://civitai.com/articles/34047/make-talking-videos-with-minimax-h3-the-5-minute-guide-26)\n- [Every setting explained (deep manual)](https://civitai.com/articles/34046/every-setting-explained-the-seamless-chain-deep-manual)\n\n**Updates**\n- [Civitai page](https://civitai.com/models/2833322)\n- [HuggingFace workflow repo](https://huggingface.co/joeygambino/MiniMax-H3-Multishot-Workflow)\n- [GitHub](https://github.com/jlucasmcrell/ComfyUI-H3-Multishot)\n\n**Model files (DiT)**\n- [curve GGUFs](https://huggingface.co/joeygambino/MiniMax-H3-curve-GGUF)\n- [comfy-native ref2va](https://civitai.com/models/2857809)\n\n**Text encoder + VAEs**\n- [encoder GGUF](https://huggingface.co/joeygambino/MiniMax-H3-encoder-GGUF)\n- [Comfy-Org/MiniMax-H3](https://huggingface.co/Comfy-Org/MiniMax-H3)\n\nNodes: search **H3 Multishot** in ComfyUI-Manager\n"
+        "**EXTEND TAKE - one prompt, one continuous speech, as long as you want.** Type a length into MASTER CONTROLS `take_seconds`; the panel sizes the window for your card (`window` = auto) and the count that fills the time. The writer (join style: extend take) writes ONE speech and cuts it across the windows - no airlock, no settle, no per-shot budgeting. Premise goes in MANUAL SCENE IDEA; one speaker works best. Set the writer's model_name to a model you have (hosted/cloud is best). Known limit: very long takes slowly sharpen - keep takes to about 4 windows for now.\n\n## MiniMax-H3 EXTEND TAKE v2.6.1\n\n**Guides**\n- [The 5-minute guide](https://civitai.com/articles/34047/make-talking-videos-with-minimax-h3-the-5-minute-guide-26)\n- [Every setting explained (deep manual)](https://civitai.com/articles/34046/every-setting-explained-the-seamless-chain-deep-manual)\n\n**Updates**\n- [Civitai page](https://civitai.com/models/2833322)\n- [HuggingFace workflow repo](https://huggingface.co/joeygambino/MiniMax-H3-Multishot-Workflow)\n- [GitHub](https://github.com/jlucasmcrell/ComfyUI-H3-Multishot)\n\n**Model files (DiT)**\n- [curve GGUFs](https://huggingface.co/joeygambino/MiniMax-H3-curve-GGUF)\n- [comfy-native ref2va](https://civitai.com/models/2857809)\n\n**Text encoder + VAEs**\n- [encoder GGUF](https://huggingface.co/joeygambino/MiniMax-H3-encoder-GGUF)\n- [Comfy-Org/MiniMax-H3](https://huggingface.co/Comfy-Org/MiniMax-H3)\n\nNodes: search **H3 Multishot** in ComfyUI-Manager\n"
       ],
       "color": "#322",
       "bgcolor": "#533",
@@ -3791,7 +3791,7 @@
           "slot_index": null,
           "links": [
             83,
-            98
+            100
           ]
         }
       ],
@@ -3915,10 +3915,6 @@
         -2238.706525086971,
         1232.5317181731461
       ],
-      "size": [
-        457.132421875,
-        374
-      ],
       "flags": {},
       "order": 60,
       "mode": 0,
@@ -3981,7 +3977,12 @@
         {
           "name": "extra_text",
           "type": "STRING",
-          "link": 99
+          "link": null
+        },
+        {
+          "name": "enabled",
+          "type": "BOOLEAN",
+          "link": 100
         }
       ],
       "outputs": [
@@ -4069,6 +4070,13 @@
           "links": [
             97
           ]
+        },
+        {
+          "name": "found",
+          "type": "BOOLEAN",
+          "links": [
+            98
+          ]
         }
       ],
       "title": "AUTO REFS (one folder per character under refs_root)",
@@ -4080,7 +4088,7 @@
         "",
         "",
         "",
-        "error"
+        "no_reference"
       ]
     },
     {
@@ -4278,7 +4286,7 @@
         "text": ""
       },
       "widgets_values": [
-        "CHARACTER PHOTOS (optional)\n\nTWO WAYS IN - pick one:\n\nAUTO: switch USE AUTO REFS on. That alone is enough - it also tells the writer (refs_attached) to stop describing the face and point at the photographs instead; measured: a written identity sentence overrides the photographs. Put one folder per character under input/h3_refs/ (folder name = the name used in the script) and the photos are found and sent to the sampler.\n\nMANUAL: leave USE AUTO REFS off, load photos into the two REFERENCE slots and switch the MANUAL REFS gate on. If the writer is on, also feed its refs_attached input a true boolean (or the writer will describe a face that fights your photos).\n\nThey'll look like that in EVERY shot. More angles = better. Works best with a ref2va model file.\n\nTwo different people? Set reference_subjects on the sampler: \"3,3\" means photos 1-3 are person A, photos 4-6 are person B. Skip this and faces will blend."
+        "CHARACTER PHOTOS (optional)\n\nAUTO: switch USE AUTO REFS on - that alone is enough. One folder per character under input/h3_refs/ (folder name = the name used in your premise); the premise is scanned, the photos go to the sampler, and the writer is told to point at them instead of describing a face (measured: a written description overrides the photographs). No folder matches? It warns in the console and renders without photos - the run does not stop (on_no_match).\n\nMANUAL: leave USE AUTO REFS off, load photos into the two REFERENCE slots and switch the MANUAL REFS gate on. The writer will still describe the person in that mode - if you use the writer, put the photos in a folder and use AUTO instead.\n\nTwo different people? Set reference_subjects on the sampler: \"3,3\" means photos 1-3 are person A, photos 4-6 are person B. Skip this and faces will blend."
       ],
       "color": "#432",
       "bgcolor": "#653"
@@ -4753,7 +4761,7 @@
     ],
     [
       76,
-      6,
+      46,
       0,
       56,
       0,
@@ -4889,19 +4897,19 @@
     ],
     [
       98,
-      60,
-      0,
+      56,
+      12,
       6,
       0,
       "BOOLEAN"
     ],
     [
-      99,
-      46,
+      100,
+      60,
       0,
       56,
-      6,
-      "STRING"
+      7,
+      "BOOLEAN"
     ]
   ],
   "groups": [

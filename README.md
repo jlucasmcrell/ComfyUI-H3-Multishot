@@ -4,7 +4,7 @@
 
 MiniMax-H3 natively generates blocks of roughly 10-15 seconds. This pack chains those blocks into a scene of arbitrary length and joins them so the result reads as a single unedited camera take rather than a cut sequence. It ships two independent chaining mechanisms, a complete single-purpose workflow (plus a variant with zero third-party dependencies), a dual-format model loader (safetensors + GGUF), and the GGUF architecture patch H3 needs.
 
-Current release: **v2.6.0 - MiniMax-H3 Seamless Chain: the extend take**.
+Current release: **v2.6.1 - MiniMax-H3 Seamless Chain: the extend take** (2.6.1 = ComfyUI-master hotfix).
 
 - Guides: [the 5-minute guide](https://civitai.com/articles/34047/make-talking-videos-with-minimax-h3-the-5-minute-guide-26) and [every setting explained](https://civitai.com/articles/34046/every-setting-explained-the-seamless-chain-deep-manual)
 - GitHub: <https://github.com/jlucasmcrell/ComfyUI-H3-Multishot>
@@ -121,6 +121,17 @@ one-widget change or node deletion for each. Highlights: no RES4LYF → set
 no Motion-Context → `continuity=first_frame`.
 
 ---
+
+## 2.6.1 - hotfix for ComfyUI master
+
+- **`AttributeError: MiniMaxH3ReferenceToVideo has no attribute '_encode_ref_audio'`**
+  (GitHub issue #15). ComfyUI master moved that helper from a static method to a
+  module-level function; the memory sampler's reference-video path called the old
+  location. It now resolves whichever one this ComfyUI has. Nothing else changed.
+- Also since 2.6.0's zip: AutoRefs runs before the writer, is gated by USE AUTO
+  REFS, exposes `found` (drives the writer's `refs_attached`), and ships
+  `on_no_match = no_reference` - a missing character folder warns and renders
+  without photos instead of stopping the run.
 
 ## 2.6.0 - the extend take: one prompt, one continuous speech, as long as you want
 
