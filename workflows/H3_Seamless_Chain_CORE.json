@@ -25,7 +25,7 @@
       "bgcolor": "#653",
       "properties": {},
       "widgets_values": [
-        "SEAMLESS CHAIN - CORE (v2.2.6)\n\nThe simple version: no extra packs, no options. Type shots, press Run,\nget one joined video with sound.\n\nDefaults fit 16-24 GB cards. More VRAM? Raise the size in the controls."
+        "SEAMLESS CHAIN - CORE (v2.6.0)\n\nThe simple version: no extra packs, no options. Type shots, press Run,\nget one joined video with sound.\n\nDefaults fit 16-24 GB cards. More VRAM? Raise the size in the controls.\n\nGuides:\n5-minute guide  https://civitai.com/articles/34047/make-talking-videos-with-minimax-h3-the-5-minute-guide-26\nEvery setting explained  https://civitai.com/articles/34046/every-setting-explained-the-seamless-chain-deep-manual"
       ]
     },
     {
@@ -571,10 +571,11 @@
       "mode": 0,
       "properties": {},
       "widgets_values": [
-        "## MiniMax-H3 Seamless Chain v2.5.5\n\n**Updates & guides**\n- [Civitai page + articles](https://civitai.com/models/2833322)\n- [HuggingFace workflow repo](https://huggingface.co/joeygambino/MiniMax-H3-Multishot-Workflow)\n- [GitHub](https://github.com/jlucasmcrell/ComfyUI-H3-Multishot)\n\n**Model files (DiT)**\n- [curve GGUFs](https://huggingface.co/joeygambino/MiniMax-H3-curve-GGUF)\n- [comfy-native ref2va](https://civitai.com/models/2857809)\n\n**Text encoder + VAEs**\n- [encoder GGUF](https://huggingface.co/joeygambino/MiniMax-H3-encoder-GGUF)\n- [Comfy-Org/MiniMax-H3](https://huggingface.co/Comfy-Org/MiniMax-H3)\n\nNodes: search **H3 Multishot** in ComfyUI-Manager\n\n*This is CORE: the zero-options variant.*"
+        "## MiniMax-H3 Seamless Chain v2.6.0\n\n**Updates & guides**\n- [Civitai page + articles](https://civitai.com/models/2833322)\n- [HuggingFace workflow repo](https://huggingface.co/joeygambino/MiniMax-H3-Multishot-Workflow)\n- [GitHub](https://github.com/jlucasmcrell/ComfyUI-H3-Multishot)\n\n**Model files (DiT)**\n- [curve GGUFs](https://huggingface.co/joeygambino/MiniMax-H3-curve-GGUF)\n- [comfy-native ref2va](https://civitai.com/models/2857809)\n\n**Text encoder + VAEs**\n- [encoder GGUF](https://huggingface.co/joeygambino/MiniMax-H3-encoder-GGUF)\n- [Comfy-Org/MiniMax-H3](https://huggingface.co/Comfy-Org/MiniMax-H3)\n\nNodes: search **H3 Multishot** in ComfyUI-Manager\n\n*This is CORE: the zero-options variant.*"
       ],
       "color": "#432",
-      "bgcolor": "#653"
+      "bgcolor": "#653",
+      "title": "MiniMax-H3 Multishot v2.6.0 - links"
     }
   ],
   "links": [

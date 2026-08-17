@@ -17,11 +17,23 @@ which is exactly what "restate it verbatim" produces, and is stated once for
 LTX with the per-shot remainder following as a beat list.
 """
 
-_SEP = "\n---\n"
+import re
+
+# Match the SAMPLER's rule verbatim (h3_multishot_utils._parse_script, and
+# h3_episode_tools._BLOCK_SPLIT). A literal "\n---\n" split was stricter than
+# every other splitter in the pack, and its failure mode is silent: it returns
+# ONE block, so an 8-shot script becomes a 1-shot render with no diagnostic.
+# Measured on this box 2026-08-17:
+#     unix 3 dashes    literal -> 2 blocks   sampler regex -> 2
+#     CRLF             literal -> 1 block    sampler regex -> 2   <- collapse
+#     trailing space   literal -> 1 block    sampler regex -> 2   <- collapse
+# CRLF is the default for anything edited in Notepad on Windows, so this was
+# live, not theoretical.
+_SEP_RE = re.compile(r"(?m)^---\s*$")
 
 
 def _blocks(script):
-    parts = [b.strip() for b in script.split(_SEP)]
+    parts = [b.strip() for b in _SEP_RE.split(script or "")]
     return [b for b in parts if b]
 
 

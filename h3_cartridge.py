@@ -74,9 +74,27 @@ def extract_for_h3(pack_path, cache_root):
     dst = os.path.join(cache_root, name)
     stamp = os.path.join(dst, ".pack_mtime")
     mtime = str(os.path.getmtime(pack_path))
-    if not (os.path.isfile(stamp)
-            and io.open(stamp, encoding="utf-8").read() == mtime):
+    with_stamp = ""
+    if os.path.isfile(stamp):
+        with io.open(stamp, encoding="utf-8") as _f:
+            with_stamp = _f.read()
+    if with_stamp != mtime:
+        # rmtree(ignore_errors=True) silently leaves the old tree in place when
+        # Windows has a handle open or a delete is still pending. The extract
+        # below then writes ON TOP, the stamp is written regardless, and refs
+        # are rebuilt from os.listdir() - so the previous cartridge's refs get
+        # merged into this one and, because the stamp now matches, it never
+        # re-extracts. Verify the removal and fall back to a fresh directory
+        # rather than merging two cartridges' identities.
         shutil.rmtree(dst, ignore_errors=True)
+        if os.path.isdir(dst) and os.listdir(dst):
+            import tempfile
+            dst = tempfile.mkdtemp(prefix=name + "_", dir=cache_root)
+            stamp = os.path.join(dst, ".pack_mtime")
+            print("[RiftCast] cartridge cache for %r could not be cleared "
+                  "(files still held); extracting to a fresh directory %s "
+                  "instead of merging with the stale one."
+                  % (name, os.path.basename(dst)), flush=True)
         os.makedirs(dst, exist_ok=True)
         with zipfile.ZipFile(pack_path) as z:
             names = {_safe_name(n) for n in z.namelist()}
@@ -100,13 +118,21 @@ def extract_for_h3(pack_path, cache_root):
                 raise RiftcastError("voice anchor failed sha256 verification")
             for r in manifest["refs"]:
                 ext(r, "refs")
-            io.open(os.path.join(dst, "dna.txt"), "w", encoding="utf-8").write(
-                z.read(_safe_name(manifest["dna"])).decode("utf-8").strip())
+            # context managers, not bare io.open(...).write(...): a handle left
+            # open inside dst is exactly what makes the NEXT run's rmtree fail
+            # and merge two cartridges (see above).
+            with io.open(os.path.join(dst, "dna.txt"), "w",
+                         encoding="utf-8") as _f:
+                _f.write(z.read(_safe_name(manifest["dna"]))
+                         .decode("utf-8").strip())
             rooms = manifest.get("environment", {}).get("rooms")
             rooms_text = (z.read(_safe_name(rooms)).decode("utf-8").strip()
                           if rooms and _safe_name(rooms) in names else "")
-            io.open(os.path.join(dst, "rooms.txt"), "w", encoding="utf-8").write(rooms_text)
-        io.open(stamp, "w", encoding="utf-8").write(mtime)
+            with io.open(os.path.join(dst, "rooms.txt"), "w",
+                         encoding="utf-8") as _f:
+                _f.write(rooms_text)
+        with io.open(stamp, "w", encoding="utf-8") as _f:
+            _f.write(mtime)
 
     refs_dir = os.path.join(dst, "refs")
     refs = sorted(os.path.join(refs_dir, f) for f in os.listdir(refs_dir)) \

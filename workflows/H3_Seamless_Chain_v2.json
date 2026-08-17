@@ -2,7 +2,7 @@
   "id": "h3-seamless-chain-v1",
   "revision": 0,
   "last_node_id": 69,
-  "last_link_id": 95,
+  "last_link_id": 98,
   "nodes": [
     {
       "id": 28,
@@ -727,57 +727,6 @@
       ]
     },
     {
-      "id": 14,
-      "type": "H3AnySwitch",
-      "pos": [
-        -1362.3228245783803,
-        1056.1629296808258
-      ],
-      "size": [
-        159.7818359375,
-        66
-      ],
-      "flags": {
-        "collapsed": true
-      },
-      "order": 55,
-      "mode": 0,
-      "inputs": [
-        {
-          "name": "use_on",
-          "type": "BOOLEAN",
-          "link": 14
-        },
-        {
-          "name": "off_path",
-          "shape": 7,
-          "type": "*",
-          "link": 12
-        },
-        {
-          "name": "on_path",
-          "shape": 7,
-          "type": "*",
-          "link": 13
-        }
-      ],
-      "outputs": [
-        {
-          "name": "value",
-          "type": "*",
-          "slot_index": 0,
-          "links": [
-            90
-          ]
-        }
-      ],
-      "title": "gate: block_cache",
-      "properties": {
-        "Node name for S&R": "H3AnySwitch"
-      },
-      "widgets_values": []
-    },
-    {
       "id": 10,
       "type": "H3AnySwitch",
       "pos": [
@@ -870,8 +819,7 @@
           "type": "*",
           "slot_index": 0,
           "links": [
-            11,
-            12
+            90
           ]
         }
       ],
@@ -921,6 +869,11 @@
             "name": "num_frames"
           },
           "link": 26
+        },
+        {
+          "name": "refs_attached",
+          "type": "BOOLEAN",
+          "link": 97
         }
       ],
       "outputs": [
@@ -975,12 +928,8 @@
       "id": 51,
       "type": "ImageBatch",
       "pos": [
-        -2582.009842829537,
-        1136.0292081407952
-      ],
-      "size": [
-        140,
-        46
+        -2582,
+        1110
       ],
       "flags": {
         "collapsed": true
@@ -1020,8 +969,8 @@
       "id": 49,
       "type": "LoadImage",
       "pos": [
-        -2583.4862919122725,
-        1261.2350651000709
+        -2583,
+        1290
       ],
       "size": [
         300.0083984375,
@@ -1060,8 +1009,8 @@
       "id": 50,
       "type": "LoadImage",
       "pos": [
-        -2583.5884958767797,
-        1610.1483776240293
+        -2584,
+        1640
       ],
       "size": [
         302.8521484375,
@@ -1097,61 +1046,11 @@
       ]
     },
     {
-      "id": 57,
-      "type": "ImageBatch",
-      "pos": [
-        -2204.315668416005,
-        1132.1128904695718
-      ],
-      "size": [
-        234.61484375,
-        46
-      ],
-      "flags": {
-        "collapsed": true
-      },
-      "order": 63,
-      "mode": 0,
-      "inputs": [
-        {
-          "name": "image1",
-          "type": "IMAGE",
-          "link": 77
-        },
-        {
-          "name": "image2",
-          "type": "IMAGE",
-          "link": 78
-        }
-      ],
-      "outputs": [
-        {
-          "name": "IMAGE",
-          "type": "IMAGE",
-          "slot_index": null,
-          "links": [
-            79
-          ]
-        }
-      ],
-      "title": "auto refs 1+2",
-      "properties": {
-        "cnr_id": "comfy-core",
-        "ver": "0.32.0",
-        "Node name for S&R": "ImageBatch"
-      },
-      "widgets_values": []
-    },
-    {
       "id": 60,
       "type": "PrimitiveBoolean",
       "pos": [
-        -2239.719668751282,
-        1201.2431022131907
-      ],
-      "size": [
-        472.335546875,
-        58
+        -2240,
+        1136
       ],
       "flags": {},
       "order": 7,
@@ -1163,11 +1062,12 @@
           "type": "BOOLEAN",
           "slot_index": null,
           "links": [
-            83
+            83,
+            97
           ]
         }
       ],
-      "title": "USE AUTO REFS (off = the two manual LoadImage slots)",
+      "title": "USE AUTO REFS",
       "properties": {
         "cnr_id": "comfy-core",
         "ver": "0.32.0",
@@ -1178,61 +1078,11 @@
       ]
     },
     {
-      "id": 58,
-      "type": "ImageBatch",
-      "pos": [
-        -2202.246562478545,
-        1166.043343639111
-      ],
-      "size": [
-        234.61484375,
-        46
-      ],
-      "flags": {
-        "collapsed": true
-      },
-      "order": 64,
-      "mode": 0,
-      "inputs": [
-        {
-          "name": "image1",
-          "type": "IMAGE",
-          "link": 79
-        },
-        {
-          "name": "image2",
-          "type": "IMAGE",
-          "link": 80
-        }
-      ],
-      "outputs": [
-        {
-          "name": "IMAGE",
-          "type": "IMAGE",
-          "slot_index": null,
-          "links": [
-            81
-          ]
-        }
-      ],
-      "title": "auto refs +3",
-      "properties": {
-        "cnr_id": "comfy-core",
-        "ver": "0.32.0",
-        "Node name for S&R": "ImageBatch"
-      },
-      "widgets_values": []
-    },
-    {
       "id": 56,
       "type": "H3AutoRefs",
       "pos": [
-        -2247.312640975518,
-        1299.0918739796418
-      ],
-      "size": [
-        481.7271484375,
-        354
+        -2247,
+        1329
       ],
       "flags": {},
       "order": 62,
@@ -1242,6 +1092,11 @@
           "name": "prompt_text",
           "type": "STRING",
           "link": 76
+        },
+        {
+          "name": "extra_text",
+          "type": "STRING",
+          "link": 98
         }
       ],
       "outputs": [
@@ -1249,25 +1104,19 @@
           "name": "ref_1",
           "type": "IMAGE",
           "slot_index": null,
-          "links": [
-            77
-          ]
+          "links": null
         },
         {
           "name": "ref_2",
           "type": "IMAGE",
           "slot_index": null,
-          "links": [
-            78
-          ]
+          "links": null
         },
         {
           "name": "ref_3",
           "type": "IMAGE",
           "slot_index": null,
-          "links": [
-            80
-          ]
+          "links": null
         },
         {
           "name": "ref_4",
@@ -1316,9 +1165,16 @@
           "type": "STRING",
           "slot_index": null,
           "links": null
+        },
+        {
+          "name": "refs_batch",
+          "type": "IMAGE",
+          "links": [
+            96
+          ]
         }
       ],
-      "title": "AUTO REFS - scans the script for character folders under refs_root",
+      "title": "AUTO REFS (one folder per character under refs_root)",
       "properties": {
         "Node name for S&R": "H3AutoRefs"
       },
@@ -1552,8 +1408,8 @@
       "id": 53,
       "type": "Note",
       "pos": [
-        -2246.1739069358314,
-        1697.188077432785
+        -2246,
+        1735
       ],
       "size": [
         481.6705703188454,
@@ -1569,7 +1425,7 @@
         "text": ""
       },
       "widgets_values": [
-        "CHARACTER PHOTOS (optional)\n\nDrop in up to 9 photos of your character and they'll look like that in EVERY\nshot. More angles = better. Works best with a ref2va model file.\n\nTwo different people? Set reference_subjects: \"3,3\" means photos 1-3 are\nperson A, photos 4-6 are person B. Skip this and faces will blend."
+        "CHARACTER PHOTOS (optional)\n\nTWO WAYS IN - pick one:\n\nAUTO: switch USE AUTO REFS on. That alone is enough - it also tells the writer (refs_attached) to stop describing the face and point at the photographs instead; measured: a written identity sentence overrides the photographs. Put one folder per character under input/h3_refs/ (folder name = the name used in the script) and the photos are found and sent to the sampler.\n\nMANUAL: leave USE AUTO REFS off, load photos into the two REFERENCE slots and switch the MANUAL REFS gate on. If the writer is on, also feed its refs_attached input a true boolean (or the writer will describe a face that fights your photos).\n\nThey'll look like that in EVERY shot. More angles = better. Works best with a ref2va model file.\n\nTwo different people? Set reference_subjects on the sampler: \"3,3\" means photos 1-3 are person A, photos 4-6 are person B. Skip this and faces will blend."
       ],
       "color": "#432",
       "bgcolor": "#653"
@@ -1606,8 +1462,8 @@
         -545.0694242301886
       ],
       "size": [
-        420.9913637192858,
-        286.69295482646885
+        421,
+        330
       ],
       "flags": {},
       "order": 12,
@@ -1617,7 +1473,7 @@
       "title": "START HERE",
       "properties": {},
       "widgets_values": [
-        "START HERE\n\nThis workflow turns a list of shot descriptions into ONE video with sound.\n\n1. Type your shots in the REWRITER box (or use the prompt files switch).\n2. Check MASTER CONTROLS: size, seconds per shot, number of shots.\n3. Press Run. One video comes out, already joined.\n\nDefaults set for 16-24 GB cards. Got more VRAM? Raise size to 736x1280.\n\nEvery panel below is OPTIONAL, the workflow runs fine with all of them off."
+        "START HERE\n\nThis workflow turns a list of shot descriptions into ONE video with sound.\n\n1. Type your shots in the REWRITER box (or use the prompt files switch).\n2. Check MASTER CONTROLS: size, seconds per shot, number of shots.\n3. Press Run. One video comes out, already joined.\n\nDefaults set for 16-24 GB cards at 736x1280. Under 16 GB? Drop to 640x1152 (keep people at or above ~1 MP).\n\nWant one person talking for a minute straight? Open H3_Extend_Take (the main workflow) or set take_seconds on MASTER CONTROLS here.\n\nGuides: the 5-minute guide + Every setting explained - links in the read-me note to the LEFT.\n\nEvery panel below is OPTIONAL, the workflow runs fine with all of them off."
       ],
       "color": "#432",
       "bgcolor": "#653"
@@ -1768,7 +1624,7 @@
       "title": "VRAM / SPEED - check these switches",
       "properties": {},
       "widgets_values": [
-        "VRAM / SPEED - check these switches\n\nHover any switch on this panel or on the SPEED BOOSTERS node for what it does and what it costs.\n\nThis panel ships all OFF - that's the tested setup. The one worth knowing: remote_encoder moves the text encoder's 15+ GB to a second PC (see the REMOTE ENCODER note).\n\nFaster renders? The SPEED BOOSTERS node next to the sampler: block cache ships ON (~11% faster, no visible change). Spectrum (~29%), TeaCache (~14-21%) and EasyCache (~21%) are faster still but can distort people - test on your own scene first, and never stack Spectrum with TeaCache.\n\nRenders slow or crashing? Lower the size or seconds-per-shot in MASTER CONTROLS first. That fixes 9 out of 10 memory problems."
+        "VRAM / SPEED - check these switches\n\nHover any switch for what it does and what it costs.\n\nThis panel ships all OFF - that's the tested setup. sol_attn and chunk_ffn lower peak VRAM (install ComfyUI-sol-attn, un-bypass the two patch nodes with Ctrl+B, then flip). remote_encoder moves the text encoder's 15+ GB to a second PC (see the REMOTE ENCODER note).\n\nFaster renders? The SPEED BOOSTERS node next to the sampler. All ship OFF: Spectrum (~29%), TeaCache (~14-21%) and EasyCache (~21%) are real speed but can distort people - test on your own scene first, and never stack Spectrum with TeaCache. Block cache does nothing at 14 steps (measured 0 hits) - only worth it at 30+ steps.\n\nRenders slow or crashing? Lower the size or seconds-per-shot in MASTER CONTROLS first. That fixes 9 out of 10 memory problems."
       ],
       "color": "#432",
       "bgcolor": "#653"
@@ -1816,53 +1672,6 @@
         true,
         2,
         8192
-      ]
-    },
-    {
-      "id": 13,
-      "type": "MiniMaxH3BlockCacheT8",
-      "pos": [
-        -1732.2582272281413,
-        753.4415810341072
-      ],
-      "size": [
-        545.0306686636656,
-        202
-      ],
-      "flags": {},
-      "order": 54,
-      "mode": 4,
-      "inputs": [
-        {
-          "name": "model",
-          "type": "MODEL",
-          "link": 11
-        }
-      ],
-      "outputs": [
-        {
-          "name": "MODEL",
-          "type": "MODEL",
-          "slot_index": 0,
-          "links": [
-            13
-          ]
-        }
-      ],
-      "title": "needs comfyui-minimax-h3-blockcache-T8",
-      "properties": {
-        "aux_id": "T8mars/comfyui-minimax-h3-blockcache-T8",
-        "ver": "3cd968f11a0b717683b6abb0477c43fe175cb608",
-        "Node name for S&R": "MiniMaxH3BlockCacheT8"
-      },
-      "widgets_values": [
-        0.12,
-        0.08,
-        0.95,
-        2,
-        "cpu",
-        8,
-        false
       ]
     },
     {
@@ -1955,11 +1764,7 @@
       "type": "H3StudioSwitches",
       "pos": [
         -2579.4819954135974,
-        216.53003324327636
-      ],
-      "size": [
-        387.7721060280252,
-        323.57544854310277
+        262
       ],
       "flags": {},
       "order": 19,
@@ -1967,15 +1772,13 @@
       "inputs": [],
       "outputs": [
         {
-          "name": "two_pass_upscale",
+          "name": "two_pass (removed)",
           "type": "BOOLEAN",
-          "slot_index": 0,
-          "links": []
+          "links": null
         },
         {
           "name": "sol_attn",
           "type": "BOOLEAN",
-          "slot_index": 1,
           "links": [
             6
           ]
@@ -1983,44 +1786,36 @@
         {
           "name": "chunk_ffn",
           "type": "BOOLEAN",
-          "slot_index": 2,
           "links": [
             10
           ]
         },
         {
-          "name": "spectrum",
+          "name": "spectrum (see Speed Boosters)",
           "type": "BOOLEAN",
-          "slot_index": 3,
-          "links": []
+          "links": null
         },
         {
-          "name": "block_cache",
+          "name": "block_cache (see Speed Boosters)",
           "type": "BOOLEAN",
-          "slot_index": 4,
-          "links": [
-            14
-          ]
+          "links": null
         },
         {
-          "name": "dual_clock_sampler",
+          "name": "dual_clock (removed)",
           "type": "BOOLEAN",
-          "slot_index": 5,
-          "links": []
+          "links": null
         },
         {
-          "name": "hybrid_cond",
+          "name": "hybrid_cond (removed)",
           "type": "BOOLEAN",
-          "slot_index": 6,
-          "links": []
+          "links": null
         },
         {
           "name": "remote_encoder",
           "type": "BOOLEAN",
           "links": [
             95
-          ],
-          "slot_index": 7
+          ]
         }
       ],
       "title": "VRAM / SPEED SWITCHES (all OFF = verified)",
@@ -2028,11 +1823,6 @@
         "Node name for S&R": "H3StudioSwitches"
       },
       "widgets_values": [
-        false,
-        false,
-        false,
-        false,
-        false,
         false,
         false,
         false
@@ -2175,8 +1965,9 @@
         false,
         false,
         0.15,
-        true,
-        false
+        false,
+        false,
+        0.12
       ]
     },
     {
@@ -2235,10 +2026,10 @@
       "mode": 0,
       "inputs": [],
       "outputs": [],
-      "title": "joeygambino Workflow Pack v.2.2.6",
+      "title": "MiniMax-H3 Multishot v2.6.0 - links",
       "properties": {},
       "widgets_values": [
-        "## MiniMax-H3 Seamless Chain v2.5.5\n\n**Updates & guides**\n- [Civitai page + articles](https://civitai.com/models/2833322)\n- [HuggingFace workflow repo](https://huggingface.co/joeygambino/MiniMax-H3-Multishot-Workflow)\n- [GitHub](https://github.com/jlucasmcrell/ComfyUI-H3-Multishot)\n\n**Model files (DiT)**\n- [curve GGUFs](https://huggingface.co/joeygambino/MiniMax-H3-curve-GGUF)\n- [comfy-native ref2va](https://civitai.com/models/2857809)\n\n**Text encoder + VAEs**\n- [encoder GGUF](https://huggingface.co/joeygambino/MiniMax-H3-encoder-GGUF)\n- [Comfy-Org/MiniMax-H3](https://huggingface.co/Comfy-Org/MiniMax-H3)\n\nNodes: search **H3 Multishot** in ComfyUI-Manager\n"
+        "## MiniMax-H3 Seamless Chain v2.6.0\n\n**Guides**\n- [The 5-minute guide](https://civitai.com/articles/34047/make-talking-videos-with-minimax-h3-the-5-minute-guide-26)\n- [Every setting explained (deep manual)](https://civitai.com/articles/34046/every-setting-explained-the-seamless-chain-deep-manual)\n\n**Updates**\n- [Civitai page](https://civitai.com/models/2833322)\n- [HuggingFace workflow repo](https://huggingface.co/joeygambino/MiniMax-H3-Multishot-Workflow)\n- [GitHub](https://github.com/jlucasmcrell/ComfyUI-H3-Multishot)\n\n**Model files (DiT)**\n- [curve GGUFs](https://huggingface.co/joeygambino/MiniMax-H3-curve-GGUF)\n- [comfy-native ref2va](https://civitai.com/models/2857809)\n\n**Text encoder + VAEs**\n- [encoder GGUF](https://huggingface.co/joeygambino/MiniMax-H3-encoder-GGUF)\n- [Comfy-Org/MiniMax-H3](https://huggingface.co/Comfy-Org/MiniMax-H3)\n\nNodes: search **H3 Multishot** in ComfyUI-Manager\n"
       ],
       "color": "#322",
       "bgcolor": "#533",
@@ -2298,7 +2089,7 @@
       "title": "BEFORE YOU UN-BYPASS",
       "properties": {},
       "widgets_values": [
-        "EXTRA SPEED SWITCHES (advanced)\n\nThese two nodes need extra packs installed first - links in SETTINGS.md.\nWithout the packs, leave them alone (bypassed) and everything works."
+        "EXTRA VRAM SWITCHES (advanced)\n\nThese two nodes lower peak VRAM (memory-efficient attention, chunked feed-forward) and need ComfyUI-sol-attn installed first - link in SETTINGS.md. Install, un-bypass them (Ctrl+B), then turn sol_attn / chunk_ffn ON in the VRAM / SPEED SWITCHES panel. Without the pack, leave them alone (bypassed) and everything works."
       ],
       "color": "#432",
       "bgcolor": "#653"
@@ -2431,12 +2222,8 @@
       "id": 52,
       "type": "H3OptionalImage",
       "pos": [
-        -2582.534018230245,
-        1168.2892898420184
-      ],
-      "size": [
-        324.255153067057,
-        58
+        -2582,
+        1186
       ],
       "flags": {},
       "order": 61,
@@ -2446,7 +2233,7 @@
           "name": "image",
           "shape": 7,
           "type": "IMAGE",
-          "link": 84
+          "link": 82
         }
       ],
       "outputs": [
@@ -2454,11 +2241,11 @@
           "name": "image",
           "type": "IMAGE",
           "links": [
-            75
+            84
           ]
         }
       ],
-      "title": "REFERENCE gate (OFF = no references)",
+      "title": "MANUAL REFS gate",
       "properties": {
         "Node name for S&R": "H3OptionalImage",
         "cnr_id": "comfy-core",
@@ -2472,12 +2259,8 @@
       "id": 59,
       "type": "H3AnySwitch",
       "pos": [
-        -1997.6519652191153,
-        1151.6287036397023
-      ],
-      "size": [
-        188.51328125,
-        66
+        -1940,
+        1215
       ],
       "flags": {
         "collapsed": true
@@ -2494,13 +2277,13 @@
           "name": "off_path",
           "shape": 7,
           "type": "*",
-          "link": 82
+          "link": 84
         },
         {
           "name": "on_path",
           "shape": 7,
           "type": "*",
-          "link": 81
+          "link": 96
         }
       ],
       "outputs": [
@@ -2509,7 +2292,7 @@
           "type": "*",
           "slot_index": null,
           "links": [
-            84
+            75
           ]
         }
       ],
@@ -2558,7 +2341,8 @@
           "type": "*",
           "slot_index": 0,
           "links": [
-            67
+            67,
+            98
           ]
         }
       ],
@@ -3114,38 +2898,6 @@
       "BOOLEAN"
     ],
     [
-      11,
-      12,
-      0,
-      13,
-      0,
-      "*"
-    ],
-    [
-      12,
-      12,
-      0,
-      14,
-      1,
-      "*"
-    ],
-    [
-      13,
-      13,
-      0,
-      14,
-      2,
-      "MODEL"
-    ],
-    [
-      14,
-      3,
-      4,
-      14,
-      0,
-      "BOOLEAN"
-    ],
-    [
       19,
       20,
       0,
@@ -3435,7 +3187,7 @@
     ],
     [
       75,
-      52,
+      59,
       0,
       30,
       7,
@@ -3450,51 +3202,11 @@
       "STRING"
     ],
     [
-      77,
-      56,
-      0,
-      57,
-      0,
-      "IMAGE"
-    ],
-    [
-      78,
-      56,
-      1,
-      57,
-      1,
-      "IMAGE"
-    ],
-    [
-      79,
-      57,
-      0,
-      58,
-      0,
-      "IMAGE"
-    ],
-    [
-      80,
-      56,
-      2,
-      58,
-      1,
-      "IMAGE"
-    ],
-    [
-      81,
-      58,
-      0,
-      59,
-      2,
-      "IMAGE"
-    ],
-    [
       82,
       51,
       0,
-      59,
-      1,
+      52,
+      0,
       "IMAGE"
     ],
     [
@@ -3507,10 +3219,10 @@
     ],
     [
       84,
-      59,
-      0,
       52,
       0,
+      59,
+      1,
       "IMAGE"
     ],
     [
@@ -3555,7 +3267,7 @@
     ],
     [
       90,
-      14,
+      12,
       0,
       66,
       0,
@@ -3600,6 +3312,30 @@
       68,
       0,
       "BOOLEAN"
+    ],
+    [
+      96,
+      56,
+      11,
+      59,
+      2,
+      "IMAGE"
+    ],
+    [
+      97,
+      60,
+      0,
+      6,
+      3,
+      "BOOLEAN"
+    ],
+    [
+      98,
+      46,
+      0,
+      56,
+      1,
+      "STRING"
     ]
   ],
   "groups": [
@@ -3718,7 +3454,7 @@
         -2602.009400625792,
         1069.657936214502,
         856.613073901633,
-        874.4434561814621
+        914
       ],
       "color": "#3f789e",
       "flags": {}

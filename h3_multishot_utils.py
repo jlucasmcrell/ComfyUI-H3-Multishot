@@ -715,6 +715,66 @@ def _auto_set_payload(sig):
     _auto_payload["sig"] = str(sig or "")
 
 
+def _payload_scheme(sig):
+    """Which sampler wrote a payload signature: H3MultishotSampler writes
+    "kf%da%d...", H3MultishotMemorySampler writes "%s%d_k%dr%d...". The two
+    namespaces never compare equal, so a raw string mismatch is NOT evidence
+    of a heavier payload (24 GB test-lab finding F008, 2026-08-16)."""
+    return "kf" if str(sig or "").startswith("kf") else "cont"
+
+
+def _payload_mult(src_sig, dst_sig):
+    """Bare->payload scale when borrowing across signatures. Same string or
+    different sampler scheme -> 1.0 (equal-cells evidence taken as-is);
+    within one scheme the measured x1.6 bare->payload jump stands. The old
+    flat "1.6 unless identical" fired on every CORE run against a
+    Memory-sampler cache: 12.4 GB became a 19.8 GB request, 129 MB of DiT
+    stayed resident, 66 s/it (24 GB lab, S1)."""
+    if src_sig == dst_sig:
+        return 1.0
+    if _payload_scheme(src_sig) != _payload_scheme(dst_sig):
+        return 1.0
+    return 1.6
+
+
+_PAYLOAD_ADD_BYTES = 4 * 1024**3    # a keyframe + an audio ref, in GB, roughly fixed
+
+
+def _payload_need(bare, src_sig, dst_sig):
+    """Pool NEED for a payload signature, from a bare (or other) measurement.
+
+    24 GB test-lab finding F010 (2026-08-16/17): the flat x1.6 was above the
+    93rd percentile of 16 measured bare->payload pairs (median 1.40x, max
+    1.73x) and the cost is ADDITIVE, not multiplicative - a largely fixed
+    number of GB, so a big relative jump on a 6 GB pool and negligible on a
+    15 GB one. Measured: 6 GB bare -> ~1.5x; 11 GB -> +3.1..+4.0 GB;
+    15 GB -> ~1.1x. A flat multiplier therefore over-reserved worst at large
+    geometry - exactly where a 24 GB card evicts weights instead (S3 run 3
+    reserved 20.6 GB for a 15.4 GB need). Model it as +4 GB capped at the old
+    x1.6, so it can only ask for less than before, never more.
+    """
+    m = _payload_mult(src_sig, dst_sig)
+    if m <= 1.0:
+        return int(bare)
+    return int(min(bare * 1.6, bare + _PAYLOAD_ADD_BYTES))
+
+
+def _model_family(stem):
+    """Coarse quant family for the reserve borrow. The pool tracks geometry
+    WITHIN a family, not across: comfy-native quant paths (w4a8/int8/nvfp4)
+    carry dequant scratch that GGUF does not - the same card's cache rates
+    read 3.0-5.7 GB/Mcell for w4a8 against 2.2-2.5 for GGUF, and a GGUF-
+    based borrow under-reserved a w4a8 first run into WDDM paging (the 24 GB lab box lab
+    F009, 2026-08-16). Under-reserving is the fatal direction."""
+    s = str(stem or "").lower()
+    if re.search(r"q\d|gguf|curve|k_[msl]|_q[0-9]", s):
+        return "gguf"
+    return "native"
+
+
+_CROSS_FAMILY_MULT = 1.8   # w4a8/gguf per-cell ratio measured on the 3090 cache
+
+
 def _auto_key(model_name, cells, sig=None):
     try:
         import torch
@@ -762,27 +822,95 @@ def _install_auto_reserve(patcher, model_name):
             # the sibling instead of guessing from free VRAM. Reference and
             # keyframe tokens ride every step; x1.6 covered the measured
             # bare->payload jump with margin.
-            sib = None
+            sib = sib_sig = None
             prefix = key.rsplit("|", 1)[0] + "|"
+            mysig = key.rsplit("|", 1)[1]
             for k2, v2 in cache.items():
-                if k2.startswith(prefix) and v2:
-                    sib = max(sib or 0, v2)
+                if k2.startswith(prefix) and v2 and (sib is None or v2 > sib):
+                    sib, sib_sig = v2, k2.rsplit("|", 1)[1]
             if sib:
-                _known_need = int(sib * 1.6)
-                reserve = max(int(sib * 1.6 * _AUTO_MARGIN), _AUTO_FLOOR)
+                _known_need = _payload_need(sib, sib_sig, mysig)
+                reserve = max(int(_known_need * _AUTO_MARGIN), _AUTO_FLOOR)
                 how = (f"payload variant of a measured shape: sibling pool "
-                       f"{sib/2**30:.1f} GB x 1.6 x {_AUTO_MARGIN}")
+                       f"{sib/2**30:.1f} GB -> need {_known_need/2**30:.1f} GB "
+                       f"(payload +4 GB capped x1.6) x {_AUTO_MARGIN}")
             else:
+                # FIRST RUN at an unseen (model, shape). The pool tracks the
+                # GEOMETRY, not the checkpoint - measured 2026-08-16: a Q8
+                # GGUF and a mixed-precision file wanted the same ~11-13 GB
+                # at the same cells. So borrow the nearest measurement on
+                # this card from ANY model and shape, scaled by cell count,
+                # before falling back to the free-VRAM placeholder - which
+                # planned 3.3 GB for an 11 GB pool twice in one afternoon
+                # and produced a crawl on a 5090 and a dead CUDA context on
+                # a 3090. Max over candidates: over-reserving streams a few
+                # GB of weights (cheap); under-reserving pages (fatal).
+                borrowed = bfrom = None
                 try:
-                    import comfy.model_management as mm
-                    free = mm.get_free_memory(mm.get_torch_device())
+                    mydev, _, _, mysig = key.split("|", 3)
+                    # same-payload siblings first; only if none exist, other
+                    # payloads with the bare->payload x1.6 on top. Otherwise a
+                    # bare shot 1 borrows a pinned shot's pool times 1.6 and
+                    # over-reserves by double.
+                    # nearest shape wins, NOT the largest estimate: pools are
+                    # not purely linear in cells (fixed overhead fattens the
+                    # per-cell rate of small shapes), so extrapolating far
+                    # overshoots - a real cache here scaled small w4a8 shapes
+                    # to 26 GB while two same-cells entries said 14-15.
+                    # rank: shape distance first, then same payload, then the
+                    # larger estimate. A same-cells measurement beats a
+                    # same-payload one from a distant shape - a real cache
+                    # extrapolated distant small shapes to 26-31 GB while
+                    # same-cells entries said 15.
+                    best = None
+                    myfam = _model_family(key.split("|", 3)[1])
+                    for k2, v2 in cache.items():
+                        try:
+                            d2, m2, c2, s2 = k2.split("|", 3)
+                            c2 = int(c2)
+                        except ValueError:
+                            continue
+                        if d2 != mydev or not v2 or not c2 or not cells:
+                            continue
+                        ratio = cells / c2
+                        if not (0.4 <= ratio <= 2.5):
+                            continue   # no wild-scale extrapolation
+                        fam_miss = 0 if _model_family(m2) == myfam else 1
+                        est = int(_payload_need(v2 * ratio, s2, mysig)
+                                  * (_CROSS_FAMILY_MULT if fam_miss else 1.0))
+                        # same quant family first (F009), then nearest shape,
+                        # then same payload, then the fatter estimate
+                        rank = (fam_miss, abs(ratio - 1.0),
+                                0 if s2 == mysig else 1, -est)
+                        if best is None or rank < best:
+                            best, borrowed, bfrom = rank, est, (c2, v2)
                 except Exception:
-                    free = 24 * 1024**3
-                reserve = max(int(min(free * _AUTO_FRACTION,
-                                      free - _AUTO_WEIGHT_NUCLEUS)),
-                              _AUTO_FLOOR)
-                how = (f"first run at this shape: "
-                       f"{_AUTO_FRACTION:.0%} of free")
+                    borrowed = None
+                if borrowed:
+                    _known_need = borrowed
+                    reserve = max(int(borrowed * _AUTO_MARGIN), _AUTO_FLOOR)
+                    how = ("borrowed pool: %.1f GB measured at cells=%d "
+                           "scaled to %.1f GB (pool tracks geometry, not "
+                           "the checkpoint)"
+                           % (bfrom[1] / 2**30, bfrom[0], borrowed / 2**30))
+                    print("[H3AutoReserve] first run with this model at this "
+                          "shape - borrowing a measured pool from another "
+                          "model/shape on this card: %.1f GB at cells=%d "
+                          "scales to %.1f GB here. This shot still records "
+                          "its own measurement."
+                          % (bfrom[1] / 2**30, bfrom[0], borrowed / 2**30),
+                          flush=True)
+                else:
+                    try:
+                        import comfy.model_management as mm
+                        free = mm.get_free_memory(mm.get_torch_device())
+                    except Exception:
+                        free = 24 * 1024**3
+                    reserve = max(int(min(free * _AUTO_FRACTION,
+                                          free - _AUTO_WEIGHT_NUCLEUS)),
+                                  _AUTO_FLOOR)
+                    how = (f"first run at this shape: "
+                           f"{_AUTO_FRACTION:.0%} of free")
         # CLAMP AGAINST THE CARD. Every GB reserved here comes out of the
         # weights budget, and a DiT that misses a FULL load streams the
         # remainder over PCIe every step. Measured 2026-08-12 at 960x544:
@@ -1132,6 +1260,27 @@ def _auto_measure_end(before, patcher=None, steps=None):
                       f"the activation figure is sound - recording it. This is "
                       f"the sample chained shots could never contribute before.",
                       flush=True)
+        elif bool(full) and _frac <= 0.02 and pool > 512 * 1024**2:
+            # ~0% of the weights were resident: the run streamed everything,
+            # and with the whole card to itself the pool inflates to fill
+            # whatever reserve it was handed (allocator caches). If the
+            # figure hugs the reserve it is an artifact OF the reserve, and
+            # storing it locks the shape into all-streaming forever -
+            # measured 2026-08-16 on the 3090: a cancelled 21.8 GB-reserve
+            # run recorded a "21.7 GB pool" at a shape two healthy runs had
+            # measured at 14-15.
+            _pinned = _auto_session.get(key) or 0
+            if _pinned and pool >= _pinned * 0.85:
+                print(f"[H3AutoReserve] discarding this shot's pool figure "
+                      f"({pool/2**30:.1f} GB): no weights were resident and "
+                      f"it hugs the {_pinned/2**30:.1f} GB reserve, so it "
+                      f"measures the reserve, not the need.", flush=True)
+            else:
+                _auto_cache_store(key, pool)
+                _auto_session.pop(key, None)
+                print(f"[H3AutoReserve] measured pool {pool/2**30:.1f} GB "
+                      f"with all weights streaming - it sits well under the "
+                      f"reserve, so the figure is real need.", flush=True)
         elif pool > 512 * 1024**2:          # ignore no-op runs
             _auto_cache_store(key, pool)
             _auto_session.pop(key, None)     # re-pin from measured
@@ -1149,23 +1298,38 @@ class H3ModelLoaderAny:
     .gguf routes through ComfyUI-GGUF (patched for minimax_h3). Keeps the
     published workflow at exactly one loader node."""
 
-    @classmethod
-    def INPUT_TYPES(cls):
+    @staticmethod
+    def _list_names(folder="diffusion_models"):
+        """Every model file the dropdown offers: core's list plus a RECURSIVE
+        walk for .gguf, which is not in supported_pt_extensions so
+        get_filename_list never returns it (and a flat listdir misses
+        anything filed under diffusion_models/gguf/). Shared by INPUT_TYPES
+        and _resolve_name - the resolver used to consult get_filename_list
+        alone, so its "moved into a gguf/ subfolder" fallback could never
+        find a gguf (2.6.0, found on the 24 GB box)."""
         import folder_paths
         import os
-        files = folder_paths.get_filename_list("diffusion_models")
+        try:
+            files = list(folder_paths.get_filename_list(folder))
+        except Exception:
+            files = []
         gguf = []
-        for d in folder_paths.get_folder_paths("diffusion_models"):
+        try:
+            dirs = folder_paths.get_folder_paths(folder)
+        except Exception:
+            dirs = []
+        for d in dirs:
             if not os.path.isdir(d):
                 continue
-            # RECURSIVE: .gguf is not in supported_pt_extensions so
-            # get_filename_list never returns it, and a flat listdir misses
-            # anything filed under diffusion_models/gguf/.
             for root, _dirs, fs in os.walk(d):
                 for f in fs:
                     if f.lower().endswith(".gguf"):
                         gguf.append(os.path.relpath(os.path.join(root, f), d))
-        names = sorted(set(files) | set(gguf))
+        return sorted(set(files) | set(gguf))
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        names = cls._list_names("diffusion_models")
         return {"required": {"model_name": (names, {
             "tooltip": "safetensors or GGUF - loader routes automatically."})},
             "optional": {"activation_reserve_gb": ("FLOAT", {
@@ -1181,7 +1345,83 @@ class H3ModelLoaderAny:
     FUNCTION = "load"
     CATEGORY = "loaders/minimax"
 
+    @classmethod
+    def VALIDATE_INPUTS(cls, model_name=None, **kwargs):
+        # ComfyUI validates every combo value BEFORE anything runs, so a
+        # workflow saved on a box that keeps the file at the root fails on a
+        # box that filed it under gguf/ (or vice versa) with value_not_in_list
+        # and nothing renders (24 GB lab F007: all three shipped workflows
+        # unqueueable there). Accept the value here; load() resolves a moved
+        # file by unique basename and raises a message that names the file
+        # when it truly is not there. Same pattern RiftPromptSource uses.
+        return True
+
+    @staticmethod
+    def _resolve_name(model_name):
+        """F007 (24 GB lab): a saved combo value stops matching the moment the
+        model tree is reorganised (a file moved into a gguf/ subfolder, or a
+        workflow saved on a box that keeps it at the root). Rather than fail
+        the whole queue with value_not_in_list, fall back to a UNIQUE basename
+        match across the folders this loader reads, and say what was resolved.
+        Ambiguous (two files, same basename) stays an error - guessing wrong
+        is worse than stopping."""
+        import folder_paths
+        import os
+        want = os.path.basename(str(model_name)).lower()
+        cands = []
+        for folder in ("diffusion_models", "unet", "checkpoints"):
+            try:
+                for f in H3ModelLoaderAny._list_names(folder):
+                    if os.path.basename(f).lower() == want:
+                        cands.append((folder, f))
+            except Exception:
+                pass
+        # exact match wins silently
+        for folder, f in cands:
+            if f == model_name:
+                return model_name
+        uniq = sorted(set(f for _, f in cands))
+        if len(uniq) == 1 and uniq[0] != model_name:
+            print("[H3ModelLoader] %r is not at the saved path; resolved by "
+                  "basename to %r (the model tree moved since this workflow "
+                  "was saved)." % (model_name, uniq[0]), flush=True)
+            return uniq[0]
+        return model_name
+
+    @staticmethod
+    def _warn_quant_backend(model_name):
+        """24 GB lab finding, 2026-08-17: on torch < cu130 comfy-kitchen's cuda
+        backend is disabled and triton is off unless --enable-triton-backend, so
+        every comfy-native quantised op (w4a8/int8/nvfp4/fp8) runs the EAGER
+        fallback - weights dequantised to bf16 before each matmul. Measured
+        A/B, one flag, same seed: 36.7 -> 17.6 s/it (-52%), and ~1.6x the
+        activation pool. GGUF bypasses comfy-kitchen entirely and is unaffected.
+        Say it once at load so nobody pays 2x for a checkpoint they chose for
+        speed."""
+        n = str(model_name).lower()
+        if n.endswith(".gguf"):
+            return
+        try:
+            import comfy_kitchen as ck
+            b = ck.list_backends()
+        except Exception:
+            return
+        def live(name):
+            info = b.get(name) if isinstance(b, dict) else None
+            return bool(info) and info.get("available") and not info.get("disabled")
+        if live("cuda") or live("triton"):
+            return
+        print("[H3ModelLoader] NOTE: only comfy-kitchen's 'eager' backend is "
+              "live on this box (cuda needs torch cu130+; triton needs "
+              "--enable-triton-backend). Comfy-native quantised checkpoints "
+              "(w4a8/int8/nvfp4/fp8) dequantise to bf16 every step here - "
+              "measured ~2x slower and ~1.6x the activation pool. Either add "
+              "--enable-triton-backend to your launch line, or use the GGUF "
+              "build of this model, which is unaffected.", flush=True)
+
     def load(self, model_name, activation_reserve_gb=0.0):
+        model_name = self._resolve_name(model_name)
+        self._warn_quant_backend(model_name)
         out = self._load_inner(model_name)
         patcher = out[0]
         # stash the checkpoint name so samplers can check task compatibility
@@ -1208,6 +1448,28 @@ class H3ModelLoaderAny:
 
     def _load_inner(self, model_name):
         import folder_paths
+        # With VALIDATE_INPUTS accepting any name, the not-found case lands
+        # here instead of at queue time - so say it clearly, with the folder
+        # ComfyUI actually searched, before either loader path gets a chance
+        # to fail obscurely.
+        try:
+            _found = folder_paths.get_full_path("diffusion_models", model_name)
+        except Exception:
+            _found = None
+        if not _found:
+            import os as _os
+            _roots = [d for d in folder_paths.get_folder_paths("diffusion_models")]
+            _hit = None
+            for _d in _roots:
+                if _os.path.isfile(_os.path.join(_d, model_name)):
+                    _hit = _os.path.join(_d, model_name)
+                    break
+            if not _hit:
+                raise RuntimeError(
+                    "[H3ModelLoader] model file not found: %r. Searched: %s. "
+                    "Pick your model file in this node's dropdown (a workflow "
+                    "saved on another machine remembers a name your models "
+                    "folder does not have)." % (model_name, ", ".join(_roots)))
         if model_name.lower().endswith(".gguf"):
             # resolve the live UnetLoaderGGUF from the global registry -
             # custom node packages load under mangled module names, so the
@@ -2220,7 +2482,7 @@ class H3MultishotSampler:
                     _cg_frozen = imgs[-1:].clone()
                     print(f"[H3Multishot] chain: house texture level "
                           f"{_cg_ref:.5f} (shot 1 tail)", flush=True)
-                    if chain_gain_control == "flatten":
+                    if chain_gain_control in ("flatten", "flatten_pin"):
                         # level shot 1 too, but only its post-fade portion:
                         # frames under the target are left alone by _cg_flatten
                         imgs, _s = _cg_flatten(imgs, _cg_ref)
@@ -2238,7 +2500,7 @@ class H3MultishotSampler:
                               f"{_cg_anchor_lap:.5f}); vs house "
                               f"{head_lap / max(_cg_ref, 1e-9) - 1.0:+.1%}",
                               flush=True)
-                    if chain_gain_control == "flatten" and _cg_ref:
+                    if chain_gain_control in ("flatten", "flatten_pin") and _cg_ref:
                         imgs, _s = _cg_flatten(imgs, _cg_ref)
                         if _s > 0:
                             print(f"[H3Multishot] chain: shot levelled to "
@@ -2807,10 +3069,21 @@ class H3MultishotMemorySampler:
                            "permanently. This is the anti-drift lever: with "
                            "shot 1 pinned, later shots always see where the "
                            "episode started. 0 = pure recency."}),
-            "chain_gain_control": (["off", "flatten", "match_output"], {
+            "chain_gain_control": (["off", "flatten", "match_output",
+                                    "flatten_pin"], {
                 "default": "off",
-                "tooltip": "Optional post-hoc texture levelling. Leave off "
-                           "unless measuring - the bank is the structural fix."}),
+                "tooltip": "Texture levelling across the chain. flatten = "
+                           "level the DECODED frames and the bank to shot 1 "
+                           "(the pin still carries accreted texture; measured "
+                           "x1.13-1.15 per hop at 736x1280 with flatten on). "
+                           "flatten_pin = EXPERIMENTAL: flatten PLUS level "
+                           "the pinned latents' fine-detail energy to shot "
+                           "1's before they are pinned. First A/Bs "
+                           "(2026-08-17) moved the ratchet only slightly; "
+                           "kept for testing, not a default. Long context_pin "
+                           "chains and extend takes past ~4 windows still "
+                           "sharpen visibly - keep takes short until the fix "
+                           "lands."}),
             "continuity": (["cut", "seamless", "seamless_tail",
                             "latent_handoff", "first_frame", "flf_chain",
                             "context_pin"], {
@@ -3210,6 +3483,17 @@ class H3MultishotMemorySampler:
                            "only: join_blend, join_fx and color_level=scene "
                            "fall back to the RAM path with a printed reason. "
                            "Needs ffmpeg on PATH."}),
+            "audio_pin_frames": ("INT", {
+                "default": 0, "min": 0, "max": 240, "step": 1,
+                "tooltip": "context_pin only: frames of the previous shot's "
+                           "AUDIO to pin as reference, independent of the "
+                           "picture pin. 0 = same as pin_frames (22 = 0.9 s). "
+                           "Longer audio context costs conditioning rows but "
+                           "NO delivered frames - the head trim stays at "
+                           "pin_frames. 96 (4 s) is the audio-memory window "
+                           "the JoyEcho ancestor of this sampler carried "
+                           "between chunks; try it for continuous speech "
+                           "across joins. Experimental."}),
         },
             # hidden inputs are not widgets, so saved workflows are unaffected
             "hidden": {"prompt": "PROMPT", "extra_pnginfo": "EXTRA_PNGINFO"}}
@@ -3280,7 +3564,14 @@ class H3MultishotMemorySampler:
             master_normalize="luma+contrast", pin_frames="22", pin_noise=0.0,
             pin_renorm=False, reference_subjects="",
             reference_video=None, reference_video_audio=None,
-            low_ram_master=False, prompt=None, extra_pnginfo=None):
+            low_ram_master=False, audio_pin_frames=0,
+            prompt=None, extra_pnginfo=None):
+        # Keep the hidden PROMPT before anything can shadow it: the shot loop
+        # rebinds `prompt` to this shot's conditioning TEXT, so by finalize()
+        # the API graph is gone and the streamed master was tagged with the
+        # last shot's script (24 GB test-lab finding F014, 2026-08-16 - core SaveVideo wrote
+        # a 42-node dict, the streamed master a 1254-char string, same run).
+        _api_prompt, _api_pnginfo = prompt, extra_pnginfo
         # two_pass_upscale is REMOVED as of 2.1.3. It spatially interpolated
         # the raw latent between passes, and H3's latent is not a spatially
         # smooth representation - interpolated values land off-manifold and
@@ -3600,6 +3891,8 @@ class H3MultishotMemorySampler:
         _cc_mu = _cc_cov = None  # house colour stats (shot 1 settled tail)
         _cp_prev = None   # context_pin: previous shot's full AV latent
         _pin_sig0 = None  # first pin's sigma - the renorm anchor
+        _pin_hf0 = None   # first pin's fine-detail energy - the flatten_pin anchor
+        _cg_last_raw = None  # previous shot's raw tail texture (pixel domain)
         _cp_trim = 0
 
         if bank_pinned == 0 and n > 4:
@@ -4047,6 +4340,79 @@ class H3MultishotMemorySampler:
                                   "sigma %.4f -> %.4f (x%.4f)"
                                   % (_sg, _pin_sig0, _k), flush=True)
 
+                if (chain_gain_control == "flatten_pin"
+                        and isinstance(_pin_src, dict)
+                        and "samples" in _pin_src):
+                    # THE OTHER HALF OF FLATTEN. chain_gain_control=flatten
+                    # levels decoded frames and the bank, but context_pin
+                    # carries the previous shot's RAW LATENTS - and their
+                    # accreted fine detail is what the next shot conditions
+                    # on, so the ratchet rode the pin regardless (measured
+                    # 2026-08-17 at 736x1280 with flatten ON: x1.13-1.15 per
+                    # hop, +66% texture by window 5, +77% by window 6 of an
+                    # extend take). Level the pin's high-frequency energy to
+                    # shot 1's tail before it is pinned: hp = z - mean3x3(z)
+                    # over (H,W); gain = sqrt(anchor/current), clamped to
+                    # [0.5, 1] so it only ever softens invented detail, never
+                    # sharpens. Video half only. After renorm (sigma anchor),
+                    # before pin_noise.
+                    import torch.nn.functional as _F
+                    _zr = _pin_src["samples"]
+                    _nested = getattr(_zr, "is_nested", False)
+                    _v0 = _zr.unbind()[0] if _nested else _zr
+                    _vf = _v0.float()
+                    _b, _c, _tt, _hh, _ww = _vf.shape
+                    _flat = _vf.permute(0, 2, 1, 3, 4).reshape(-1, _c, _hh, _ww)
+                    _low = _F.avg_pool2d(_flat, 3, stride=1, padding=1,
+                                         count_include_pad=False)
+                    _hp = _flat - _low
+                    # measure on the tail (what gets pinned): last ~8 latent frames
+                    _tail = max(1, min(_tt, 8))
+                    _hp_t = _hp.reshape(_b, _tt, _c, _hh, _ww)[:, -_tail:]
+                    _e = float(_hp_t.pow(2).mean())
+                    if _pin_hf0 is None:
+                        _pin_hf0 = _e
+                        print("[H3Memory] context_pin: fine-detail anchor "
+                              "%.5f (shot 1 tail)" % _e, flush=True)
+                    elif _e > 1e-12:
+                        _g_lat = (_pin_hf0 / _e) ** 0.5
+                        # The latent high-pass under-reads what the VAE turns
+                        # into visible sharpness (measured 2026-08-17: latent
+                        # HF +7.5% at a hop where decoded texture rose +19%),
+                        # so also take the PIXEL-domain ratio the frame flatten
+                        # measured on this shot's raw tail - Laplacian variance
+                        # is amplitude^2, so amplitude gain = sqrt(ref/raw) -
+                        # and apply the stronger (smaller) of the two.
+                        _g_pix = 1.0
+                        try:
+                            if _cg_ref and _cg_last_raw and _cg_last_raw > _cg_ref:
+                                _g_pix = (float(_cg_ref) / float(_cg_last_raw)) ** 0.5
+                        except Exception:
+                            _g_pix = 1.0
+                        _g = max(0.5, min(1.0, _g_lat, _g_pix))
+                        print("[H3Memory] context_pin: flatten_pin gains - "
+                              "latent %.3f, pixel %.3f -> using %.3f"
+                              % (_g_lat, _g_pix, _g), flush=True)
+                        if _g < 0.999:
+                            _newv = (_low + _hp * _g).reshape(
+                                _b, _tt, _c, _hh, _ww).permute(0, 2, 1, 3, 4)
+                            _newv = _newv.to(_v0.dtype)
+                            _pin_src = dict(_pin_src)
+                            if _nested:
+                                import comfy.nested_tensor as _nt3
+                                _cc = list(_zr.unbind()); _cc[0] = _newv
+                                _pin_src["samples"] = _nt3.NestedTensor(_cc)
+                            else:
+                                _pin_src["samples"] = _newv
+                            print("[H3Memory] context_pin: flatten_pin - pin "
+                                  "fine-detail energy %.5f vs anchor %.5f -> "
+                                  "high-pass x%.3f (only softens)"
+                                  % (_e, _pin_hf0, _g), flush=True)
+                        else:
+                            print("[H3Memory] context_pin: flatten_pin - pin "
+                                  "already at anchor (%.5f vs %.5f), untouched"
+                                  % (_e, _pin_hf0), flush=True)
+
                 if (pin_noise > 0 and isinstance(_pin_src, dict)
                         and "samples" in _pin_src):
                     # noised clean condition, applied to the carrier. The pin
@@ -4096,9 +4462,15 @@ class H3MultishotMemorySampler:
                           "own sigma=%.4f (anti-ratchet, variance-preserving)"
                           % (_what, _t, _sig[0] if _sig else float("nan")),
                           flush=True)
+                _apf = int(audio_pin_frames or 0) or int(_pf)
+                if _apf != int(_pf):
+                    print("[H3Memory] context_pin: audio reference window %d "
+                          "frames (%.1f s), picture pin %s frames - the head "
+                          "trim follows the picture pin only." %
+                          (_apf, _apf / 24.0, _pf), flush=True)
                 cond, _cp_trim = _mc_cls().apply(
                     conditioning=cond, vae=video_vae, latent=latent,
-                    context_length=_pf, audio_context_length=int(_pf),
+                    context_length=_pf, audio_context_length=_apf,
                     context_latent=_pin_src)
                 print("[H3Memory] context_pin: previous shot's tail pinned "
                       "as raw latents (%sf video + %sf audio ref, trim %d "
@@ -4468,7 +4840,10 @@ class H3MultishotMemorySampler:
                     _cg_ref = _cg_lap_var(imgs[-_w:])
                     print(f"[H3Memory] chain: house texture level "
                           f"{_cg_ref:.5f}", flush=True)
-                if _cg_ref and chain_gain_control == "flatten":
+                if _cg_ref and chain_gain_control in ("flatten", "flatten_pin"):
+                    # the RAW tail texture of this shot, before levelling: the
+                    # pixel-domain ratchet flatten_pin has to undo on the pin
+                    _cg_last_raw = _cg_lap_var(imgs[-_w:]) if si > 0 else _cg_ref
                     imgs, _s = _cg_flatten(imgs, _cg_ref)
                     if _s > 0:
                         print(f"[H3Memory] chain: levelled (sigma {_s:.2f})",
@@ -4835,7 +5210,8 @@ class H3MultishotMemorySampler:
                 _i += 1
             _mpath = os.path.join(_mdir, "master_%05d.mp4" % _i)
             _stream_writer.finalize(_mpath, master_normalize, waveform, sr,
-                                    prompt=prompt, extra_pnginfo=extra_pnginfo)
+                                    prompt=_api_prompt,
+                                    extra_pnginfo=_api_pnginfo)
             _ph = torch.zeros((1, _stream_writer.shots[0]["h"],
                                _stream_writer.shots[0]["w"], 3),
                               dtype=torch.half)

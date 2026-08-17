@@ -31,7 +31,27 @@ const PROP = "h3_widget_values";
 const NODES = new Set([
     "H3MultishotMemorySampler",
     "H3MultishotSampler",
+    "H3StudioSwitches",
 ]);
+
+// H3StudioSwitches, 2.6.0: four flags that drove nothing in any shipped
+// workflow were removed (two_pass_upscale - the feature itself left in 2.1.3;
+// spectrum - the Speed Boosters node owns it; dual_clock_sampler and
+// hybrid_cond - never wired), and block_cache moved to the Speed Boosters
+// node. Old positional layouts:
+//   2.5.1-2.5.5 (8): [two_pass, sol_attn, chunk_ffn, spectrum, block_cache,
+//                     dual_clock, hybrid_cond, remote_encoder]
+//   <=2.5.0     (7): same without remote_encoder
+// New (3):           [sol_attn, chunk_ffn, remote_encoder]
+// A positional load of an old array would put the old sol_attn value into
+// chunk_ffn - so map by position ONCE here, before any widget reads it.
+function repairSwitchesLayout(node) {
+    const wv = node?.widgets_values;
+    if (!Array.isArray(wv) || wv.length < 7) return false;
+    const sol = wv[1], chunk = wv[2], remote = wv.length >= 8 ? wv[7] : false;
+    node.widgets_values = [!!sol, !!chunk, !!remote];
+    return true;
+}
 
 // v1.1 and earlier: [script, shot_count, width, height, frames_per_shot,
 //                    seed, (seed control), steps, memory_frames, anchor_frames]
@@ -54,9 +74,13 @@ app.registerExtension({
     beforeConfigureGraph(graphData) {
         // Runs before the nodes are built, so the splice lands before any
         // widget reads its value - and before ComfyUI range-checks it.
-        let n = 0;
+        let n = 0, s = 0;
         for (const node of graphData?.nodes ?? []) {
+            if (node?.type === "H3StudioSwitches") { if (repairSwitchesLayout(node)) s++; continue; }
             if (NODES.has(node?.type) && repairLegacyLayout(node)) n++;
+        }
+        if (s) {
+            console.warn(`[H3-Multishot] mapped ${s} VRAM/SPEED switches panel(s) from the pre-2.6 layout by name (four unused flags removed).`);
         }
         if (n) {
             console.warn(

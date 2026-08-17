@@ -42,7 +42,8 @@ for _m in ("h3_keyframes",       # keyframe anchors
            "rift_writer_unload",  # adds a free-VRAM switch to the writer
            "h3_remote_encode",   # CLIP-over-LAN + the /encode server route
            "h3_tae_decode",     # 9 MB draft decode for seed hunts
-           "h3_speed_boosters"): # switch panel for optional accelerators
+           "h3_speed_boosters",  # switch panel for optional accelerators
+           "h3_extend"):         # H3ExtendTake: windows from a take length
     _merge(_m)
 
 # Teaches ComfyUI-GGUF the minimax_h3 architecture, in memory, at startup.

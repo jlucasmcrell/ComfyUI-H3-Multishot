@@ -285,11 +285,23 @@ class H3AutoRefs:
             "on_no_match": (["error", "no_reference"], {"default": "error",
                 "tooltip": "error = stop the run when no character matches "
                 "(an identity render without refs is a wasted render)."}),
+            # 2.6.0: the writer may anonymise names (ID_A) or a script may
+            # only IMPLY the character; the premise / scene idea almost always
+            # names them. Wire the scene-idea text here and both are scanned.
+            "extra_text": ("STRING", {"forceInput": True, "tooltip":
+                "Optional second text to scan for character folder names - "
+                "wire the scene idea / premise here so a writer that renames "
+                "the character to ID_A still casts the right photos."}),
         }}
 
-    RETURN_TYPES = tuple(["IMAGE"] * 9 + ["STRING", "STRING"])
+    # refs_batch (2.6.0, appended last so saved graphs keep their slots):
+    # every picked photo in one IMAGE batch, resized to the first photo's
+    # size. Wire THIS to the sampler - the per-slot outputs feed a chain of
+    # core ImageBatch nodes that crash when a character has fewer photos
+    # than the chain expects.
+    RETURN_TYPES = tuple(["IMAGE"] * 9 + ["STRING", "STRING", "IMAGE"])
     RETURN_NAMES = tuple([f"ref_{i+1}" for i in range(9)]
-                         + ["prompt_out", "report"])
+                         + ["prompt_out", "report", "refs_batch"])
     FUNCTION = "pick"
     CATEGORY = "video/minimax"
 
@@ -304,11 +316,12 @@ class H3AutoRefs:
 
     @classmethod
     def IS_CHANGED(cls, prompt_text, max_per_character, refs_root="",
-                   characters="", overrides="", on_no_match="error"):
+                   characters="", overrides="", on_no_match="error",
+                   extra_text=""):
         import os
         root = cls._root(refs_root)
-        sig = [str(hash(prompt_text or "")), str(max_per_character),
-               characters, overrides, root]
+        sig = [str(hash((prompt_text or "") + "|" + (extra_text or ""))),
+               str(max_per_character), characters, overrides, root]
         try:
             for d in sorted(os.listdir(root)):
                 p = os.path.join(root, d)
@@ -320,7 +333,8 @@ class H3AutoRefs:
         return "|".join(sig)
 
     def pick(self, prompt_text, max_per_character, refs_root="",
-             characters="", overrides="", on_no_match="error"):
+             characters="", overrides="", on_no_match="error",
+             extra_text=""):
         import os
         import numpy as np
         import torch
@@ -355,6 +369,11 @@ class H3AutoRefs:
             scrub = re.sub(r'\\"(?:[^"\\]|\\.)*?\\"', " ", scrub)
             scrub = re.sub(r'"(?:[^"\\]|\\.)*?"', " ", scrub)
             scrub = re.sub(r"says,\s*'(?:[^'])*?'", " ", scrub)
+            if (extra_text or "").strip():
+                # the premise names people the writer may have anonymised;
+                # its dialogue (if any) gets the same scrub
+                _x = re.sub(r'"(?:[^"\\]|\\.)*?"', " ", str(extra_text))
+                scrub = scrub + " " + _x
             low = scrub.lower()
             found = []
             for d in dirs:
@@ -402,13 +421,26 @@ class H3AutoRefs:
                                  "set `characters`, or switch on_no_match.")
             print(msg + " - continuing WITHOUT references.", flush=True)
             return tuple([None] * self.MAX_SLOTS
-                         + [prompt_text, "(no references)"])
+                         + [prompt_text, "(no references)", None])
 
         prompt_out = "\n".join(binds) + "\n" + (prompt_text or "")
         report = f"{len(images)} ref(s): " + "; ".join(lines)
         print(f"[H3AutoRefs] {report}", flush=True)
         out = images + [None] * (self.MAX_SLOTS - len(images))
-        return tuple(out + [prompt_out, report])
+        # one batch for the sampler: photos of different sizes are fitted to
+        # the first photo's size, the same way core ImageBatch does it
+        batch = images[0]
+        if len(images) > 1:
+            import comfy.utils as _cu
+            _h, _w = images[0].shape[1], images[0].shape[2]
+            fitted = [images[0]]
+            for im in images[1:]:
+                if im.shape[1] != _h or im.shape[2] != _w:
+                    im = _cu.common_upscale(im.movedim(-1, 1), _w, _h,
+                                            "bilinear", "center").movedim(1, -1)
+                fitted.append(im)
+            batch = torch.cat(fitted, dim=0)
+        return tuple(out + [prompt_out, report, batch])
 
 
 class H3RefBatch:
@@ -526,6 +558,29 @@ class H3StudioControls:
                 "tooltip": "Drives the prompt-source switch. OFF = type the "
                            "scene yourself; ON = pull it from the prompt-set "
                            "file or folder. Wire to an H3 Any Switch."}),
+            # EXTEND TAKE (2026-08-17): give it a length instead of shots x
+            # frames. 0 = off (everything above behaves exactly as before).
+            "take_seconds": ("FLOAT", {
+                "default": 0.0, "min": 0.0, "max": 600.0, "step": 0.5,
+                "tooltip": "EXTEND TAKE: 0 = off. Any other value = the length "
+                           "of the finished take; frames_per_shot and "
+                           "shot_count above are then OVERRIDDEN by a window "
+                           "sized for this card (see 'window') and the count "
+                           "that fills the time. Set the writer's join_style "
+                           "to 'extend take' so it writes ONE speech across "
+                           "the windows."}),
+            "window": (["auto", "243", "226", "209", "192", "175", "158",
+                        "141", "124", "107", "90"], {
+                "default": "auto",
+                "tooltip": "Frames per window when take_seconds is set. auto "
+                           "= the largest window whose estimated activation "
+                           "pool fits with most of the weights resident on "
+                           "THIS card (wire model for a real weight size; 15 "
+                           "GB assumed otherwise). Bigger window = fewer "
+                           "joins; smaller = less VRAM."}),
+            "model": ("MODEL", {
+                "tooltip": "Optional, EXTEND TAKE only: the loaded H3 model, "
+                           "so 'auto' can size its weights."}),
         }}
 
     RETURN_TYPES = ("INT", "INT", "INT", "INT", "STRING", "STRING",
@@ -538,7 +593,14 @@ class H3StudioControls:
 
     def emit(self, width, height, frames_per_shot, steps,
              sampler_name, scheduler, shot_count=0,
-             use_file_prompts=False):
+             use_file_prompts=False, take_seconds=0.0, window="auto",
+             model=None):
+        if take_seconds and take_seconds > 0:
+            from .h3_extend import plan_take
+            n, f, total, summary = plan_take(take_seconds, window, width,
+                                             height, 24, 22, model)
+            frames_per_shot, shot_count = f, n
+            print("[H3StudioControls] " + summary, flush=True)
         print(f"[H3StudioControls] {width}x{height}, {frames_per_shot}f/shot, "
               f"{steps} steps, {sampler_name}/{scheduler}, "
               f"shots={'auto' if not shot_count else shot_count}, "
@@ -693,6 +755,7 @@ class H3AnySwitch:
                 "off_path": (_h3_any, {"lazy": True}),
                 "on_path": (_h3_any, {"lazy": True}),
             },
+            "hidden": {"prompt": "PROMPT", "unique_id": "UNIQUE_ID"},
         }
 
     RETURN_TYPES = (_h3_any,)
@@ -700,66 +763,78 @@ class H3AnySwitch:
     FUNCTION = "pick"
     CATEGORY = "H3/episode"
 
-    def check_lazy_status(self, use_on, off_path=None, on_path=None):
+    def check_lazy_status(self, use_on, off_path=None, on_path=None,
+                          prompt=None, unique_id=None):
         return ["on_path" if use_on else "off_path"]
 
-    def pick(self, use_on, off_path=None, on_path=None):
+    def pick(self, use_on, off_path=None, on_path=None, prompt=None,
+             unique_id=None):
+        name = "on_path" if use_on else "off_path"
         v = on_path if use_on else off_path
         if v is None:
-            raise ValueError(
-                "H3AnySwitch: the selected input (%s) is not connected"
-                % ("on_path" if use_on else "off_path"))
+            # an unwired selection is a canvas mistake - say so. A WIRED
+            # input that delivered nothing (an OFF gate upstream, e.g. the
+            # manual-refs gate) is a valid "nothing" and passes through.
+            wired = False
+            try:
+                wired = isinstance(
+                    prompt[str(unique_id)]["inputs"].get(name), list)
+            except Exception:
+                wired = False
+            if not wired:
+                raise ValueError(
+                    "H3AnySwitch: the selected input (%s) is not connected"
+                    % name)
+            print("[H3AnySwitch] %s is wired but delivered nothing (a gate "
+                  "upstream is off) - passing nothing." % name, flush=True)
         return (v,)
 
 
 class H3StudioSwitches:
     """One labeled panel of feature toggles; each BOOLEAN output drives H3AnySwitch gates."""
 
+    # 2.6.0: only flags that drive something in a shipped workflow. Removed:
+    # two_pass_upscale (the feature itself was removed from the sampler in
+    # 2.1.3 - the flag drove nothing), spectrum (owned by the Speed Boosters
+    # node), block_cache (same - one switch there instead of un-bypass+flip
+    # here), dual_clock_sampler and hybrid_cond (never wired anywhere).
+    # Widget layout change is handled by web/js/h3_widget_persistence.js,
+    # which maps the old 7/8-value array by position on load; new saves
+    # persist by name.
+    #
+    # OUTPUT SLOTS ARE NOT SHRUNK. Saved graphs link by slot INDEX, and a
+    # 2.5.x canvas wires sol_attn from slot 1, chunk_ffn from slot 2 and the
+    # remote encoder from slot 7. Shrinking to three outputs made every one
+    # of those graphs fail validation ("tuple index out of range") or, worse,
+    # silently drive the wrong gate. So the panel keeps the 2.5.5 slot
+    # layout: eight BOOLEAN outputs in the original order, three of them
+    # driven by widgets, the removed five always False (their gates then take
+    # the off_path, i.e. the plain model - exactly what a user who never
+    # installed those packs was getting anyway).
     FLAGS = [
-        ("two_pass_upscale", True),
-        ("sol_attn", True),
-        ("chunk_ffn", True),
-        ("spectrum", True),
-        ("block_cache", True),
-        ("dual_clock_sampler", False),
-        ("hybrid_cond", False),
-        # Appended last on purpose: widgets_values are positional, so older
-        # saved panels load unchanged and pick up the default.
+        ("sol_attn", False),
+        ("chunk_ffn", False),
         ("remote_encoder", False),
     ]
+    LEGACY_SLOTS = ["two_pass_upscale", "sol_attn", "chunk_ffn", "spectrum",
+                    "block_cache", "dual_clock_sampler", "hybrid_cond",
+                    "remote_encoder"]
+    LEGACY_LABEL = {"two_pass_upscale": "two_pass (removed)",
+                    "spectrum": "spectrum (see Speed Boosters)",
+                    "block_cache": "block_cache (see Speed Boosters)",
+                    "dual_clock_sampler": "dual_clock (removed)",
+                    "hybrid_cond": "hybrid_cond (removed)"}
 
     TIPS = {
-        "two_pass_upscale":
-            "Two-pass rendering: sample small, finish at full size. Acts only "
-            "in workflows with the two-pass lane wired - the main Seamless "
-            "Chain workflow does not use it. If dual_clock_sampler is also "
-            "on, that one wins and this is suppressed.",
         "sol_attn":
             "Memory-efficient attention: lowers peak VRAM on large canvases, "
             "slightly slower. Two steps to use: install ComfyUI-sol-attn and "
-            "un-bypass the attention patch node (Ctrl+B), then turn this on.",
+            "un-bypass the attention patch node (Ctrl+B), then turn this on. "
+            "The 24 GB card's tool for 243-frame windows.",
         "chunk_ffn":
             "Runs the model's feed-forward layers in chunks to lower peak "
             "VRAM, slightly slower. Same two steps: install ComfyUI-sol-attn, "
-            "un-bypass the patch node (Ctrl+B), then turn this on.",
-        "spectrum":
-            "Routes the Spectrum lane in workflows that wire it. In the main "
-            "workflow use the SPEED BOOSTERS node instead: about 29% faster, "
-            "but it can distort people - compare on your own scene first.",
-        "block_cache":
-            "Skips model blocks whose input barely changed: about 11% faster "
-            "with output indistinguishable in side-by-side testing. Needs "
-            "comfyui-minimax-h3-blockcache-T8 installed and its patch node "
-            "un-bypassed (Ctrl+B). The SPEED BOOSTERS node offers the same "
-            "cache with no un-bypass step.",
-        "dual_clock_sampler":
-            "Experimental: advances video and audio on separate clocks. Needs "
-            "a full sigma schedule (simple or beta scheduler), and suppresses "
-            "two_pass_upscale while on.",
-        "hybrid_cond":
-            "Experimental conditioning mix, not wired in the shipped "
-            "workflows. Leave off unless a workflow's own notes say "
-            "otherwise.",
+            "un-bypass the chunk FFN node (Ctrl+B), then turn this on.",
         "remote_encoder":
             "Encode prompts on a second ComfyUI PC so this card never loads "
             "the 15+ GB text encoder. Fill in the H3 Remote Text Encoder "
@@ -773,26 +848,17 @@ class H3StudioSwitches:
             n: ("BOOLEAN", {"default": d, "tooltip": cls.TIPS.get(n, "")})
             for n, d in cls.FLAGS}}
 
-    RETURN_TYPES = tuple("BOOLEAN" for _ in FLAGS)
-    RETURN_NAMES = tuple(n for n, _ in FLAGS)
+    # map(), not a comprehension: a comprehension in a class body cannot see
+    # class-level names (LEGACY_LABEL) - that mistake took the whole module
+    # down on load.
+    RETURN_TYPES = ("BOOLEAN",) * len(LEGACY_SLOTS)
+    RETURN_NAMES = tuple(map(LEGACY_LABEL.get, LEGACY_SLOTS, LEGACY_SLOTS))
     FUNCTION = "emit"
     CATEGORY = "H3/episode"
 
     def emit(self, **kw):
-        vals = dict(kw)
-        # INTERLOCK: the dual-clock euler sampler validates for a FULL sigma
-        # schedule (1.0 -> 0.0) and hard-rejects the split schedules two-pass
-        # produces. When both are on, dual_clock wins and two-pass is
-        # suppressed for this run instead of erroring out mid-queue.
-        if vals.get("dual_clock_sampler") and vals.get("two_pass_upscale"):
-            vals["two_pass_upscale"] = False
-            print("[H3StudioSwitches] dual_clock_sampler is ON -> "
-                  "two_pass_upscale suppressed for this run (the dual-clock "
-                  "sampler requires the full sigma schedule and rejects "
-                  "split schedules). Also use a standard full scheduler "
-                  "(simple/beta) with it - RES4SHO curves may not start at "
-                  "exactly sigma 1.0.", flush=True)
-        return tuple(vals[n] for n, _ in self.FLAGS)
+        live = {n: bool(kw.get(n, d)) for n, d in self.FLAGS}
+        return tuple(live.get(n, False) for n in self.LEGACY_SLOTS)
 
 
 NODE_CLASS_MAPPINGS["H3AnySwitch"] = H3AnySwitch

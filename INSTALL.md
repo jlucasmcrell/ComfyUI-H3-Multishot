@@ -2,8 +2,9 @@
 
 Requires **ComfyUI v0.30.0 or newer** (native MiniMax-H3 support).
 
-There are two workflows in this pack. Start with CORE — it needs nothing
-except this pack.
+Four workflows ship. **H3_Extend_Take** is the main one (one premise, one
+continuous take for the length you ask). CORE needs nothing except this pack
+if you want to try the engine with zero extras.
 
 ---
 
@@ -106,10 +107,14 @@ empty.
 ## 3. Load a workflow
 
 ```
-workflows/H3_Seamless_Chain_v2.json     <- everything (start here)
-workflows/H3_Seamless_Chain_CORE.json   <- same job, zero extra packs
+workflows/H3_Extend_Take.json           <- MAIN: one premise, one continuous take (start here)
+workflows/H3_Seamless_Chain_v2.json     <- shot-by-shot chain, every option
+workflows/H3_Seamless_Chain_CORE.json   <- same engine, zero extra packs
 workflows/H3_Keyframes.json             <- single-clip keyframe anchoring
 ```
+
+If you had an older H3 canvas open, close its tab before opening the new file:
+ComfyUI restores old tabs and re-selects them when you click the same name.
 
 **v2** supersedes the older `H3_Multishot_AIO` and `H3_Multishot_MEMORY`
 graphs — every lane they had is in v2, behind gates that ship off. If you
@@ -202,16 +207,19 @@ correct either way.)
 
 ### The prompt writer needs a model you actually have
 
-`JoyEcho_LLMEnhance` calls an OpenAI-compatible endpoint. The workflow ships
-pointed at a local Ollama:
+`JoyEcho_LLMEnhance` calls an OpenAI-compatible endpoint. The workflows ship
+pointed at a local Ollama; the model name is whatever the canvas was saved
+with (H3_Extend_Take: an Ollama cloud tag, `deepseek-v4-pro:cloud`; v2:
+`qwen3:14b`):
 
 ```
 base_url    http://localhost:11434/v1
-model_name  qwen3:14b
+model_name  <pick one you have>
 ```
 
-**Pull that model before the first queue, or the run stops on a 404** —
-`LLM API error 404: model 'qwen3:14b' not found`:
+**Pick a model you have pulled (or a cloud/hosted one you are signed in for)
+before the first queue, or the run stops on a 404** —
+`LLM API error 404: model '...' not found`:
 
 ```
 ollama pull qwen3:14b

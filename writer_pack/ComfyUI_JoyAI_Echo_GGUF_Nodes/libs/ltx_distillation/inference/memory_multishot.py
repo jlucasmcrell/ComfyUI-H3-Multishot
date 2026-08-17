@@ -485,7 +485,7 @@ class PairedAudioVideoMemoryBank:
         # COLD START. If this speaker owns no slot yet, filtering would zero
         # EVERY slot and hand them a bank of pure silence to continue from -
         # strictly worse than no filtering at all. Measured on the first attempt
-        # at this feature: Glyph's first line generated against an all-silent
+        # at this feature: a character's first line generated against an all-silent
         # bank and her pitch wandered 219 -> 276 -> 258Hz across three lines,
         # where with filtering off she was identical on all three. That single
         # regression is what got per-character memory shelved.

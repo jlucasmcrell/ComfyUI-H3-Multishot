@@ -3608,6 +3608,10 @@ def _load_system_prompt(mode: str) -> str:
 # in this pack. The doctrine validator on G: reads the SAME file - do not
 # fork the text into other tools (that is how doctrine copies drift).
 _BOUNDARY_RULES_PATH = _PROMPTS_DIR / "h3_boundary_rules_continuous.md"
+# Extend take: one continuous speech across pinned windows - the OPPOSITE
+# discipline (no airlock, no settle, speech runs through the boundary).
+_EXTEND_RULES_PATH = _PROMPTS_DIR / "h3_extend_rules.md"
+_REFS_RULES_PATH = _PROMPTS_DIR / "h3_refs_attached_rules.md"
 
 # Only for the strict "continuous take" style: no cuts exist at all.
 _TAKE_ONLY_RULE = (
@@ -3617,10 +3621,20 @@ _TAKE_ONLY_RULE = (
     "block.")
 
 
+def _is_extend(join_style) -> bool:
+    return bool(join_style) and str(join_style).startswith("extend")
+
+
 def _load_boundary_rules(join_style: str) -> str:
     """The system-prompt addendum for a chained join style ('' for cuts)."""
     if not join_style or join_style.startswith("cuts"):
         return ""
+    if _is_extend(join_style):
+        if not _EXTEND_RULES_PATH.exists():
+            raise FileNotFoundError(
+                f"extend rules file missing: {_EXTEND_RULES_PATH} - "
+                "reinstall the pack.")
+        return _EXTEND_RULES_PATH.read_text(encoding="utf-8").strip()
     if not _BOUNDARY_RULES_PATH.exists():
         raise FileNotFoundError(
             f"boundary rules file missing: {_BOUNDARY_RULES_PATH} - "
@@ -3630,6 +3644,54 @@ def _load_boundary_rules(join_style: str) -> str:
     if "take" in join_style:
         rules += "\n" + _TAKE_ONLY_RULE
     return rules
+
+
+def _load_refs_rules() -> str:
+    """System-prompt addendum used when reference photographs ride along.
+
+    Render-verified 2026-08-17 (same seed): the writer's identity sentence
+    beats attached reference photographs - the model rendered the prose's
+    person, not the photographs'. Pointing the identity sentence at the
+    photographs instead rendered the referenced person. Single source of
+    truth in prompts/h3_refs_attached_rules.md.
+    """
+    if not _REFS_RULES_PATH.exists():
+        raise FileNotFoundError(
+            f"refs rules file missing: {_REFS_RULES_PATH} - reinstall the pack.")
+    return _REFS_RULES_PATH.read_text(encoding="utf-8").strip()
+
+
+_ID_SENTENCE = None
+
+
+def _point_identity_at_refs(prompts):
+    """refs_attached: make the identity sentence deterministic.
+
+    The system-prompt rule works for an anonymous ID_A but a premise that
+    NAMES the character ("Dana, sixteen, ...") still came back with a full
+    description ("Dana is a sixteen-year-old ... shoulder-length dark brown
+    hair ...") - and that sentence beats the photographs (same-seed measured).
+    So after generation every sentence of the shape "<Name> is ... <age|hair|
+    face|build|eyes|man|woman|girl|boy|teen> ..." is replaced by the pointer
+    sentence. Wardrobe ("<Name> wears ...") is left alone: wardrobe is a per-
+    scene choice and rotates. Returns (new_prompts, replaced_count)."""
+    import re as _re
+    global _ID_SENTENCE
+    if _ID_SENTENCE is None:
+        _ID_SENTENCE = _re.compile(
+            r"\b([A-Z][A-Za-z0-9']*(?:_[A-Z])?) is (?:an? |the )?"
+            r"[^.\n]*?\b(?:year|years|-old|hair|face|build|eyes|eyed|skin|"
+            r"woman|man|girl|boy|teen\w*|adult|elderly|complexion)"
+            r"[^.\n]*\.")
+    out, n = [], 0
+    for ptxt in prompts:
+        def _rep(m):
+            nonlocal n
+            n += 1
+            return ("%s looks exactly as in the reference photographs - same "
+                    "face, hair and age." % m.group(1))
+        out.append(_ID_SENTENCE.sub(_rep, str(ptxt)))
+    return out, n
 
 
 def _spoken_words(shot_text):
@@ -3670,6 +3732,21 @@ def _budget_warn(prompts, blo, bhi, slack=1.25):
               "dialogue. A long piece carried by that little speech "
               "plays as a slideshow."
               % (speaking, len(prompts)), flush=True)
+    # A SILENT shot whose text still talks about lip movement / lip sync is
+    # an under-specified mouth: with a voice anchor in the chain the model
+    # played an EARLIER shot's line back into it (render-verified 2026-08-17,
+    # shot 3 of a 4-shot take re-spoke shot 1's line word for word). Flag it
+    # by name; the fix is writer-side (few-shot framing sentence).
+    import re as _re
+    for i, p in enumerate(prompts, 1):
+        s = p if isinstance(p, str) else str(p)
+        if not _spoken_words(s) and _re.search(r"lip[- ]?(movement|sync)", s, _re.I):
+            print("[JoyEcho] WARNING shot %d is SILENT but its text mentions "
+                  "lip movement/sync - an unassigned mouth invents speech, and "
+                  "in a chained take with a voice anchor it can re-speak an "
+                  "earlier line. Write the mouth positively (\"lips stay "
+                  "pressed shut\") and keep the framing about the face only."
+                  % i, flush=True)
     for i, n in bad:
         print("[JoyEcho] WARNING shot %d: %d spoken words against a "
               "%d-%d budget for this clip length. Speech that overruns "
@@ -3699,7 +3776,12 @@ def _speakable_budget(num_frames, fps, chained):
         return None
     _fps = fps if (fps and fps > 0) else 25.0
     secs = num_frames / _fps
-    speak = max(3.0, secs - 5.0) if chained else secs
+    if chained == "extend":
+        # extend take: speech runs through the boundary; only the discarded
+        # ~1 s replay head is unspeakable (0.9 s at pin 22)
+        speak = max(3.0, secs - 1.0)
+    else:
+        speak = max(3.0, secs - 5.0) if chained else secs
     return secs, speak, max(6, int(round(speak * 1.2))), int(round(speak * 2.0))
 
 
@@ -3900,13 +3982,20 @@ class JoyEcho_LLMEnhance:
                 # after it.
                 "model_name": (_llme_model_list(), {
                     "default": "gpt-4o",
-                    "tooltip": "Installed models, read live from Ollama "
-                               "(JOYECHO_LLM_URL to point elsewhere; 60s cache). "
-                               "Models referenced by saved graphs are always "
-                               "listed even when the endpoint is down. For an "
-                               "endpoint this cannot enumerate, pick "
-                               "'(custom ...)' and type the name in "
-                               "model_name_custom.",
+                    "tooltip": "Which model writes the script. PREFER A HOSTED "
+                               "OR CLOUD MODEL (an Ollama ':cloud' tag, or any "
+                               "OpenAI-compatible endpoint): a local writer big "
+                               "enough to be good is 15-25 GB, and loading it "
+                               "on the render box right before the video model "
+                               "evicts that model from RAM/VRAM and cost a 24 GB "
+                               "card a 12-minute reload (measured). Local is "
+                               "fine when the writer runs on another machine "
+                               "or your card has room. Installed models are "
+                               "read live from Ollama (JOYECHO_LLM_URL to point "
+                               "elsewhere; 60s cache); models referenced by "
+                               "saved graphs are always listed. For an endpoint "
+                               "this cannot enumerate, pick '(custom ...)' and "
+                               "type the name in model_name_custom.",
                 }),
                 "num_shots": ("INT", {
                     "default": 0, "min": 0, "max": 30,
@@ -3941,7 +4030,8 @@ class JoyEcho_LLMEnhance:
                 "join_style": ([
                     "cuts (independent setups)",
                     "continuous take (chained, no cuts)",
-                    "continuous scene with cuts (chained)"], {
+                    "continuous scene with cuts (chained)",
+                    "extend take (one continuous speech across windows)"], {
                     "default": "cuts (independent setups)",
                     "tooltip": "How consecutive prompts join at render time.\n"
                                "cuts = every prompt is an independent setup; "
@@ -3959,6 +4049,22 @@ class JoyEcho_LLMEnhance:
                                "prompts/h3_boundary_rules_continuous.md "
                                "(single source of truth - validator reads "
                                "the same file).",
+                }),
+                # forceInput: a link, never a widget, so saved graphs' widget
+                # values keep their slots. Wire the same boolean that switches
+                # your reference photographs on.
+                "refs_attached": ("BOOLEAN", {
+                    "forceInput": True,
+                    "tooltip": "Wire this from the switch that turns your "
+                               "reference photographs on. When true the "
+                               "writer stops describing faces, hair, age and "
+                               "build and writes 'looks exactly as in the "
+                               "reference photographs' instead - measured on "
+                               "the same seed: a written identity sentence "
+                               "overrides the photographs and renders a "
+                               "different person; the pointer sentence renders "
+                               "the referenced one. Rules in "
+                               "prompts/h3_refs_attached_rules.md.",
                 }),
             },
         }
@@ -3990,6 +4096,7 @@ class JoyEcho_LLMEnhance:
         num_frames: int = 0,
         fps: float = 25.0,
         join_style: str = "cuts (independent setups)",
+        refs_attached: bool = False,
     ):
         import urllib.request
         import urllib.error
@@ -4117,7 +4224,8 @@ class JoyEcho_LLMEnhance:
             # to size against the RAW clip length while the main path
             # subtracted the airlock and replay, so on a chained render revise
             # asked for lines that could not fit the block.
-            _rev_chained = not join_style.startswith("cuts")
+            _rev_chained = ("extend" if _is_extend(join_style)
+                            else not join_style.startswith("cuts"))
             _rev_budget = _speakable_budget(num_frames, _fps_r, _rev_chained)
             _rev_lo = _rev_hi = None
             if _rev_budget is None:
@@ -4223,6 +4331,10 @@ class JoyEcho_LLMEnhance:
             # so without this nothing ever looked at what came back.
             if _rev_lo and _rev_hi:
                 _budget_warn(_fixed, _rev_lo, _rev_hi)
+            if refs_attached:
+                _fixed, _nrep = _point_identity_at_refs(_fixed)
+                print(f"[JoyEcho] refs_attached: {_nrep} identity sentence(s) "
+                      "pointed at the reference photographs.", flush=True)
             return (json.dumps({"prompts": _fixed}, ensure_ascii=True),)
 
         if not api_key.strip():
@@ -4262,6 +4374,12 @@ class JoyEcho_LLMEnhance:
             sys_prompt = sys_prompt.rstrip() + "\n\n" + _rules
             print(f"[JoyEcho] LLMEnhance join_style='{join_style}': "
                   "boundary rules appended to the system prompt.", flush=True)
+        if refs_attached:
+            sys_prompt = sys_prompt.rstrip() + "\n\n" + _load_refs_rules()
+            print("[JoyEcho] LLMEnhance refs_attached: identity sentences will "
+                  "point at the reference photographs instead of describing "
+                  "the person (rules appended to the system prompt).",
+                  flush=True)
 
         # long_story / short_story treat the input as SOURCE MATERIAL. A plain
         # premise goes in as-is; a finished script is handed over as its shots
@@ -4299,9 +4417,31 @@ class JoyEcho_LLMEnhance:
             # is shorter than the block. Sizing dialogue to the full block
             # is exactly the failure that dropped the airlock and chopped
             # the line head (render-verified 2026-08-10).
-            _chained = not join_style.startswith("cuts")
+            _chained = ("extend" if _is_extend(join_style)
+                        else not join_style.startswith("cuts"))
             _, _speak, lo, hi = _speakable_budget(num_frames, _fps, _chained)
-            user_msg += (
+            if _chained == "extend":
+                _n = max(1, int(num_shots or 1))
+                _tot_s = secs + (_n - 1) * (secs - 1.0)
+                user_msg += (
+                    "\n\nEXTEND TAKE: this is ONE unbroken take of about "
+                    f"{_tot_s:.0f} seconds, rendered as {_n} consecutive "
+                    f"windows of {secs:.1f} seconds each (at "
+                    f"{int(round(_fps))} fps). Write ONE continuous speech for "
+                    f"the whole take - about {lo * _n}-{hi * _n} words in "
+                    f"total - then cut it into the {_n} blocks at phrase "
+                    f"boundaries so each block carries about {lo}-{hi} words - "
+                    f"aim for the UPPER half of that range ({(lo + hi) // 2}-{hi}), "
+                    f"because a thin block renders as seconds of dead air (a "
+                    f"10-second window with 11 words measured a 5-second hole) - "
+                    f"and every block speaks. Speech runs through the "
+                    f"boundaries with no pauses; block k+1 begins with the next "
+                    f"words after block k. Same visual block, verbatim, in "
+                    f"every window. These numbers override any default clip "
+                    f"length mentioned above."
+                )
+            else:
+              user_msg += (
                 f"\n\nEach shot is a single continuous clip about {secs:.1f} "
                 f"seconds long (at {int(round(_fps))} fps). Pace every shot to "
                 f"fill roughly {secs:.0f} seconds: give the action enough small "
@@ -4311,8 +4451,8 @@ class JoyEcho_LLMEnhance:
                 f"delivered as one natural line or a short two-line exchange, with "
                 f"room for pauses, breath, and reaction. These per-shot timing "
                 f"numbers override any default clip length mentioned above."
-            )
-            if _chained:
+              )
+            if _chained and _chained != "extend":
                 user_msg += (
                     f" Of those {secs:.0f} seconds, only about {_speak:.0f} "
                     "are speakable: the first ~2 seconds of every shot after "
@@ -4476,6 +4616,14 @@ class JoyEcho_LLMEnhance:
                     f"mode to 'passthrough (raw JSON, skip LLM)' and supply "
                     f"the script yourself.\n\nRaw output:\n{_raw[:800]}")
         num = len(data["prompts"])
+
+        if refs_attached:
+            data["prompts"], _nrep = _point_identity_at_refs(data["prompts"])
+            content = json.dumps(data, ensure_ascii=True)
+            print(f"[JoyEcho] refs_attached: {_nrep} identity sentence(s) "
+                  "pointed at the reference photographs (a written "
+                  "description would override them - same-seed measured).",
+                  flush=True)
 
         print(f"[JoyEcho] LLM generated {num} shot prompt(s).", flush=True)
 

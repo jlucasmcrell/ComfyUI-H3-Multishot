@@ -157,7 +157,7 @@ switch is lazy, so the branch you are not using never executes.
 |---|---|---|
 | `seed_per_shot` | `ON` | **Leave it on.** Measured: varying the seed per shot *holds* the face; using one seed for every shot drifted both face and voice. Identity lives in the conditioning, not the seed. |
 | `start_image` | unwired | An identity anchor image. Seeds shot 1 and anchors appearance. Optional — the frame relay plus verbatim descriptions usually suffice. |
-| `reference_images` | **gate off** | A batch of character portraits carried into **every** shot as `<Picture 1>`, `<Picture 2>`… Bind them in the prompt text. Needs a ref2va checkpoint. Fed by the **REFERENCE** lane in the anchors column: two `LoadImage` nodes → `ImageBatch` → **REFERENCE gate**. Flip the gate on and point the loaders at your portraits; chain another `ImageBatch` for a third and fourth. Unlike `start_image` these are not a first frame — they do not constrain shot 1's composition, they only carry who the person is, and they are what covers shot 1 while the memory bank is still empty. |
+| `reference_images` | **off** | A batch of character portraits carried into **every** shot as `<Picture 1>`, `<Picture 2>`… Bind them in the prompt text. Needs a ref2va checkpoint. Fed by the REFERENCE IMAGES group two ways: **USE AUTO REFS** on (photos found from the script, nothing else to flip), or the two `LoadImage` slots with the **MANUAL REFS gate** on; chain another `ImageBatch` for a third and fourth manual slot. Unlike `start_image` these are not a first frame — they do not constrain shot 1's composition, they only carry who the person is, and they are what covers shot 1 while the memory bank is still empty. |
 | `voice_ref` | unwired | A clean solo speech clip, carried into every shot as `<Audio 1>`, pinning the voice. |
 | `self_anchor_voice` | **`on`** (needs `ref2va`) | Shot 1's *own rendered voice* becomes the reference for every later shot — no file needed. Write shot 1 with a clean solo line. Needs a ref2va checkpoint; a wired `voice_ref` takes priority. Note it enlarges the activation pool on every shot after the first. |
 
@@ -271,6 +271,15 @@ the fastest route to a working chain: the activation reserve measures each
 shape and conditioning payload as it renders and sizes the pool itself. It has
 held on 32 GB and 24 GB cards alike. These switches are for digging out of a
 spill the console has already reported, not for pre-emptive tuning.
+
+**What "held on 24 GB" costs, measured 2026-08-17 on a 3090 at the shipped
+736x1280 x 192 frames:** shot 1 (no references yet) keeps ~8 GB of the 14.5 GB
+model resident and runs ~67 s/step; every later shot carries the memory bank as
+references, its activation pool measures ~15 GB, only ~4 GB of weights stay
+resident and it runs ~98 s/step - about 23 minutes per shot, streaming the rest
+from RAM each step. It works, it is just slow. On a 24 GB card the levers, in
+order: 640x1152 (keeps most weights resident, roughly 3x faster), 141-frame
+windows, then `sol_attn` / `chunk_ffn`.
 
 The gates are lazy — an off patch never executes, so leaving them alone costs
 nothing.
@@ -421,14 +430,32 @@ what it picked:
 
 Glance at that line to confirm the right cast loaded.
 
-**The shipped workflow wires three of those nine outputs.** `H3AutoRefs` exposes
-`ref_1` ... `ref_9`; the Seamless chain batches `ref_1`, `ref_2` and `ref_3` into
-the sampler and leaves the rest unconnected. One character at
-`max_per_character` 3 therefore works exactly as described, but two or three
-matched characters produce more images than the graph carries, and the surplus
-is dropped without a warning. Either keep `max_per_character` x characters at 3
-or fewer, or extend the `auto refs` batch chain in the REFERENCE IMAGES group to
-take `ref_4` and beyond.
+**Switching it on (2.6.0).** In the REFERENCE IMAGES group, flip **USE AUTO
+REFS** on. That alone is enough - the node's `refs_batch` output (every picked
+photo in one batch) goes straight to the sampler. Before 2.6.0 a second
+**REFERENCE gate** sat downstream and silently discarded auto refs unless you
+also switched it on; the log said `3 ref(s)` and the render had none. That gate
+is now the **MANUAL REFS gate** and only guards the two `LoadImage` slots. The
+line that proves refs reached the sampler is
+`[H3Memory] N reference image(s) ride in every shot` - if you see the
+`[H3AutoRefs]` line without it, nothing went in.
+
+The nine per-slot outputs `ref_1` ... `ref_9` are still there for graphs that
+route photos individually; `refs_batch` carries every picked photo (up to the
+model's 9-slot cap), so two or three matched characters no longer overflow.
+
+**The writer must not describe the person (2.6.0).** Measured on the same
+seed: with photographs attached, a written identity sentence ("a woman in her
+thirties with dark hair tied back") rendered *that* person; the same prompt
+with the sentence replaced by "looks exactly as in the reference photographs -
+same face, hair, age and clothing" rendered the person in the photographs. The
+writer node has a `refs_attached` BOOLEAN input; the shipped canvases wire it
+from USE AUTO REFS, so switching auto refs on also switches the writer into
+pointer mode (log line: `LLMEnhance refs_attached: identity sentences will
+point at the reference photographs`). Rules live in
+`prompts/h3_refs_attached_rules.md`. Hand-written scripts: do the same thing
+yourself - name the ID and point at the photographs, describe wardrobe only if
+it must differ from them.
 
 | widget | default | what it does |
 | --- | --- | --- |
@@ -476,11 +503,11 @@ none require specific hardware, VRAM cost is negligible.
 - baseline 621s
 - Spectrum 441s (-29%) - github.com/xmarre/ComfyUI-Spectrum-MiniMax-H3
 - TeaCache 0.15 531s (-14%), 0.30 491s (-21%) - github.com/Icyoung/ComfyUI-MiniMaxH3-TeaCache
-- block cache 551s (-11%) - github.com/T8mars/comfyui-minimax-h3-blockcache-T8
+- block cache 551s (-11%) - github.com/T8mars/comfyui-minimax-h3-blockcache-T8 - CORRECTED 2026-08-17: 0 cache hits on every run at 14 steps on two cards; inert at the shipped step count, the -11% did not reproduce. Ships OFF; only meaningful at 30+ steps.
 - Spectrum + TeaCache stacked: 450s - no faster than Spectrum alone. Pick one.
 
 Eye-test verdicts (operator, same-seed masters, 2026-08-16): blockcache
-indistinguishable from baseline -> ships ON. Spectrum and TeaCache both showed
+indistinguishable from baseline (because it did nothing - see above; ships OFF). Spectrum and TeaCache both showed
 visible distortion on people (environments unaffected). The stack was severely
 damaged. Ambient audio acceptable on every arm.
 
@@ -488,7 +515,7 @@ A booster whose pack is missing prints an install link and passes the model
 through unchanged.
 
 
-## Memory systems (new in 2.5.5)
+## Memory systems (new in 2.5)
 
 ### Driver headroom (automatic)
 
@@ -531,3 +558,36 @@ about 2 seconds, versus roughly a minute per shot through the real VAE.
 Drafts smear fine texture but composition, framing and motion read clearly.
 Use it to audition seeds or triage a batch, then decode keepers through the
 real VAE. Never use it for finals.
+
+## Extend take (new in 2.6)
+
+One prompt, one continuous speech, as long as you want.
+
+### `take_seconds` / `window` / `model` (MASTER CONTROLS)
+
+Set `take_seconds` to the length you want and leave `window` on `auto`. The
+panel picks the largest window whose estimated activation pool fits with
+most of the weights resident on your card - wire the loader's MODEL into
+the panel's `model` socket for a real weight size (15 GB assumed otherwise)
+- and derives the number of windows that fills the time. It prints its plan
+in the console. `frames_per_shot` and `shot_count` on the panel are
+overridden while `take_seconds` is set; 0 turns it off. Pick a number for
+`window` to override auto (bigger = fewer joins, smaller = less VRAM; 141
+is the comfortable 24 GB window, 243 the 32 GB one).
+
+### Writer join style: `extend take`
+
+The writer receives the whole take's length and word budget, writes ONE
+continuous speech, and cuts it across the windows ONLY at sentence or clause
+boundaries - no airlock, no settle, no silence at the joins. It steers to the
+upper half of each window's word budget because dead air is simply window
+seconds minus speech seconds. Rules live in `prompts/h3_extend_rules.md`.
+
+### `audio_pin_frames` (memory sampler)
+
+Frames of the previous window's AUDIO to pin as reference, independent of
+the picture pin. 0 = same as `pin_frames`. Longer audio context costs
+conditioning rows but no delivered frames. 96 (4 s) reproduces the JoyEcho
+audio memory window; measured neutral at n=1 on a same-seed A/B. Ships 0.
+
+**Known limit (2.6.0):** the chain's texture ratchet is not fully solved for long takes - measured about +13% fine texture per join at 736x1280 with the anti-drift set on. Under ~4 windows (~30-40 s) it is slight; at 7 windows it is visible sharpening. Keep extend takes to ~4 windows for now; a pin-side fix is in progress for 2.6.1.

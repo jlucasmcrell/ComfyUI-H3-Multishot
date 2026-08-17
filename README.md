@@ -4,8 +4,9 @@
 
 MiniMax-H3 natively generates blocks of roughly 10-15 seconds. This pack chains those blocks into a scene of arbitrary length and joins them so the result reads as a single unedited camera take rather than a cut sequence. It ships two independent chaining mechanisms, a complete single-purpose workflow (plus a variant with zero third-party dependencies), a dual-format model loader (safetensors + GGUF), and the GGUF architecture patch H3 needs.
 
-Current release: **v2.5.5 - MiniMax-H3 Seamless Chain: the memory release**.
+Current release: **v2.6.0 - MiniMax-H3 Seamless Chain: the extend take**.
 
+- Guides: [the 5-minute guide](https://civitai.com/articles/34047/make-talking-videos-with-minimax-h3-the-5-minute-guide-26) and [every setting explained](https://civitai.com/articles/34046/every-setting-explained-the-seamless-chain-deep-manual)
 - GitHub: <https://github.com/jlucasmcrell/ComfyUI-H3-Multishot>
 - Civitai: <https://civitai.com/models/2833322>
 
@@ -121,6 +122,84 @@ no Motion-Context → `continuity=first_frame`.
 
 ---
 
+## 2.6.0 - the extend take: one prompt, one continuous speech, as long as you want
+
+Type a length. Get a take.
+
+### The extend take
+
+Set **`take_seconds`** on MASTER CONTROLS (or open the new
+`H3_Extend_Take` workflow, which is v2 with it already set) and give the
+writer ONE premise. The panel sizes a window for your card (`window = auto`
+- the largest window whose activation pool fits with most of the weights
+resident; wire the loader's MODEL into the panel for a real weight size) and
+the number of windows that fills the time; the writer, in its new **extend
+take** join style, writes ONE continuous speech and cuts it across the
+windows at sentence boundaries; the memory sampler chains them under
+`context_pin`. There is no airlock, no settle, no per-shot dialogue budget
+to think about. H3 continues the speech across every join in its own voice
+- no TTS.
+
+Verified before shipping: seven writer-driven renders on a 32 GB card at
+141/192/243-frame windows plus a 65-second, 7-window take, **every join
+continued the speech** (zero repeats, zero clipped words), reviewed blind as
+one uninterrupted take. Dead air at a join is a word-fill problem, not a
+join problem: the writer is now steered to the upper half of its per-window
+budget (measured: 11 words in a 10 s window left a 5 s hole; the steer took
+the same config to 1.8 s).
+
+- `take_seconds` = 0 (default) is the old behaviour exactly; saved
+  workflows are unaffected (new widgets appended last).
+- `audio_pin_frames` on the memory sampler: the audio reference window,
+  independent of the picture pin (96 = the 4 s audio memory the JoyEcho
+  ancestor of this sampler carried; measured neutral at n=1, ships 0).
+- Standalone `H3ExtendTake` node for graphs that want the sizing outside
+  the panel.
+
+**Known limit (2.6.0):** the chain's texture ratchet is not fully solved for long takes - measured about +13% fine texture per join at 736x1280 with the anti-drift set on. Under ~4 windows (~30-40 s) it is slight; at 7 windows it is visible sharpening. Keep extend takes to ~4 windows for now; a pin-side fix is in progress for 2.6.1.
+
+### Also in 2.6.0
+
+- **Auto refs now reach the sampler on their own.** The REFERENCE IMAGES
+  lane had two switches in series: USE AUTO REFS, and a REFERENCE gate
+  downstream that silently discarded the auto refs unless you also flipped
+  it - the log said `3 ref(s)` and the character rendered from prose alone.
+  USE AUTO REFS alone is now enough; the gate is the MANUAL REFS gate and only
+  guards the two LoadImage slots. `H3AutoRefs` gained a `refs_batch` output
+  (every picked photo in one batch, so two or three matched characters no
+  longer overflow a 3-slot chain), and `H3AnySwitch` passes an OFF gate's
+  nothing through instead of erroring.
+- **The writer no longer overrides your reference photographs.** Measured on
+  the same seed: with photographs attached, the writer's identity sentence
+  ("a woman in her thirties with dark hair tied back") rendered *that*
+  person, not the one in the photographs; the same prompt with the sentence
+  replaced by "looks exactly as in the reference photographs" rendered the
+  referenced person. The writer has a `refs_attached` input (wired from USE
+  AUTO REFS in the shipped canvases); when true its identity sentences point
+  at the photographs and describe nothing about face, hair, age or build.
+  Rules in `prompts/h3_refs_attached_rules.md`. If you use the writer with
+  MANUAL refs, feed that input a true boolean.
+- **Saved 2.5.x canvases keep working.** The VRAM/SPEED panel dropped its
+  five dead toggles but keeps all eight output slots in the original order,
+  because saved graphs link by slot index - the removed slots emit `False`.
+- **Reserve planning fixes from the 24 GB test lab** - the bare-to-payload
+  x1.6 no longer fires between the two samplers' differently-named payload
+  signatures (it was inflating CORE-workflow reserves and leaving 129 MB of
+  DiT resident); a first run at a new shape now borrows measurements only
+  from the same quant family (GGUF pool measurements do not transfer to
+  w4a8/int8, which run 1.5-2x the pool per token - a cross-family borrow
+  under-reserved a first run straight into driver paging); the streamed
+  master's embedded metadata is the API graph again, not the last shot's
+  text.
+- **Writer: silent shots can no longer echo the voice anchor.** A silent
+  shot whose boilerplate said "visible lip movement clearly readable" while
+  shot 1's voice rode along as `<Audio 1>` re-spoke shot 1's line word for
+  word. The few-shot framing sentence no longer mentions lip movement, the
+  silent-shot rule cites the render, and the writer warns by shot number if
+  a silent shot's text still does.
+
+---
+
 ## 2.5.5 - the memory release: renders that no longer gamble, RAM that no longer runs out
 
 Four new memory systems, all measured, two of them automatic.
@@ -170,7 +249,8 @@ and batch triage, never for finals.
 - **Speed Boosters panel** - Spectrum, TeaCache, block cache and ComfyUI's
   own EasyCache behind switches, each measured (-11% to -29%) and eye-tested,
   with honest per-switch notes about which ones can distort people. Block
-  cache (identical output, -11%) ships ON. Missing packs print an install
+  cache turned out inert at 14 steps (0 hits measured on every run, both
+  cards) and ships OFF as of 2.6.0. Missing packs print an install
   link instead of breaking the graph.
 - **New defaults for 16-24 GB cards** - 736x1280 (the model distorts faces
   below ~1 MP), 192 frames, 14 steps, curve-Q5_1 model, the full anti-drift
@@ -1427,18 +1507,26 @@ This is also why `seed_per_shot` should stay ON - see the settings table.
 
 | Switch | Shipped | Requires |
 | --- | --- | --- |
-| Memory-efficient attention | `OFF` | ComfyUI-sol-attn |
-| Chunked feed-forward | `OFF` | ComfyUI-sol-attn |
-| Block cache | `OFF` | comfyui-minimax-h3-blockcache-T8 |
+| `sol_attn` (memory-efficient attention) | `OFF` | ComfyUI-sol-attn, un-bypass its node |
+| `chunk_ffn` (chunked feed-forward) | `OFF` | ComfyUI-sol-attn, un-bypass its node |
+| `remote_encoder` (encode prompts on a second PC) | `OFF` | the H3 Remote Text Encoder node filled in |
 
-All three OFF reproduces the verified recipe exactly. The gates are lazy — an OFF patch never *executes* — but the patch nodes must still *exist* for the graph to validate, so the packs are required (or delete the three patch nodes and their gates). There is also an activation-reserve control here for overriding ComfyUI's inference-memory estimate.
+All three OFF reproduces the verified recipe exactly. The gates are lazy - an
+OFF path never *executes*. Speed boosters (Spectrum, TeaCache, block cache,
+EasyCache) live on the **H3 Speed Boosters** node, not here. The panel keeps
+its 2.5.x **eight output slots** in the original order (`two_pass`, `sol_attn`,
+`chunk_ffn`, `spectrum`, `block_cache`, `dual_clock`, `hybrid_cond`,
+`remote_encoder`) so saved graphs keep working; the five removed slots always
+emit `False`. There is also an activation-reserve control here for overriding
+ComfyUI's inference-memory estimate.
 
 ### Shipped workflow defaults
 
 ```
-1280x736  |  362 frames/shot  |  14 steps  |  euler + beta57 (full; RES4LYF) / beta (CORE, stock)
-continuity = context_pin      |  ref2va checkpoint   |  bank ON
-all VRAM switches OFF         |  preview_first_shot ON
+H3_Extend_Take (main): 1280x736 landscape | take_seconds 30, window auto | 14 steps | euler + beta57
+H3_Seamless_Chain_v2:  736x1280 portrait  | 192 frames/shot x 4 shots | 14 steps | euler + beta57 (RES4LYF) / beta (CORE)
+continuity = context_pin      |  ref2va checkpoint   |  bank ON   |  chain_gain_control = flatten
+all VRAM switches OFF         |  all speed boosters OFF  |  preview_first_shot ON
 24fps mux -> output/video/H3CHAIN/  (+ paired audio file)
 ```
 

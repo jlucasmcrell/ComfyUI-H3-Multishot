@@ -29,11 +29,24 @@ import subprocess
 def _ffmpeg():
     import shutil
     p = shutil.which("ffmpeg")
-    if not p:
-        raise RuntimeError(
-            "low_ram_master needs ffmpeg on PATH (lossless shot temps + the "
-            "final master encode). Install ffmpeg or turn low_ram_master off.")
-    return p
+    if p:
+        return p
+    # PATH is the exception, not the rule, on a venv or portable ComfyUI.
+    # Measured on the 24 GB lab box 2026-08-16: no ffmpeg anywhere on PATH, so every
+    # low_ram_master run died in _stage() before a single frame was written -
+    # with a message telling the operator to install software the box already
+    # had. imageio-ffmpeg ships a full build (7.1 here, libx264 + aac both
+    # verified) and ComfyUI already depends on it for the video nodes, so it
+    # is present wherever this pack can run. imageio caches the resolved path.
+    try:
+        import imageio_ffmpeg
+        return imageio_ffmpeg.get_ffmpeg_exe()
+    except Exception:  # noqa: BLE001
+        pass
+    raise RuntimeError(
+        "low_ram_master needs ffmpeg: none on PATH and imageio-ffmpeg is not "
+        "importable. `pip install imageio-ffmpeg` (ComfyUI normally installs "
+        "it) or turn low_ram_master off.")
 
 
 class ShotStreamWriter:
@@ -54,6 +67,14 @@ class ShotStreamWriter:
         # arrives, because join_blend (seamless_tail/latent_handoff) mutates
         # the previous shot's tail frames in place. Peak RAM = ~two shots.
         self.pending = None
+        # Set the moment finalize() is entered. A run that dies BEFORE finalize
+        # (sampler OOM, POST /interrupt, CUDA context loss) used to orphan every
+        # staged shot forever - lossless temps, so a killed 6-shot 736x1280 run
+        # left multiple GB in output/video/H3CHAIN_STREAM/tmp_<pid>/ with nothing
+        # left alive that knew the path (measured on the 24 GB lab box 2026-08-16).
+        # Crashes INSIDE finalize deliberately keep their temps: the encode-failed
+        # error message points the operator at them for post-mortem.
+        self._finalized = False
 
     def add(self, imgs):
         """Deferred staging: stash this shot, stage the previous one."""
@@ -87,6 +108,24 @@ class ShotStreamWriter:
               "host RAM holds statistics only."
               % (len(self.shots), t, os.path.getsize(path) / 2 ** 20),
               flush=True)
+
+    def __del__(self):
+        """Last-resort sweep for a run that never reached finalize()."""
+        try:
+            if getattr(self, "_finalized", True) or not getattr(self, "dir", ""):
+                return
+            import shutil
+            n = len(getattr(self, "shots", ()))
+            shutil.rmtree(self.dir, ignore_errors=True)
+            try:
+                os.rmdir(os.path.dirname(self.dir))
+            except OSError:
+                pass
+            if n:
+                print("[H3StreamMaster] run aborted before finalize - discarded "
+                      "%d staged shot temp(s)." % n, flush=True)
+        except Exception:  # noqa: BLE001
+            pass          # interpreter teardown; never raise from __del__
 
     # ------------------------------------------------------------------
     def _gains(self, mode, med=9):
@@ -125,10 +164,47 @@ class ShotStreamWriter:
             cg = (s_target / med_s.clamp_min(1e-4)).clamp(0.70, 1.43)
         return lg, cg, luma
 
+    def _tag(self, master_path, prompt, extra_pnginfo):
+        """Remux with prompt/workflow container tags via an FFMETADATA file."""
+        import json
+        tags = {}
+        if prompt is not None:
+            tags["prompt"] = json.dumps(prompt)
+        for k, v in (extra_pnginfo or {}).items():
+            tags[k] = json.dumps(v)
+        if not tags:
+            return
+
+        def esc(s):
+            for ch in ("\\", "=", ";", "#"):
+                s = s.replace(ch, "\\" + ch)
+            return s.replace("\n", "\\\n")
+
+        meta = os.path.join(self.dir, "ffmeta.txt")
+        with open(meta, "w", encoding="utf-8") as f:
+            f.write(";FFMETADATA1\n")
+            for k, v in tags.items():
+                f.write("%s=%s\n" % (esc(k), esc(v)))
+        tagged = master_path + ".tagged.mp4"
+        r = subprocess.run(
+            [_ffmpeg(), "-y", "-v", "error", "-i", master_path,
+             "-f", "ffmetadata", "-i", meta, "-map_metadata", "1",
+             "-map", "0", "-c", "copy",
+             # mp4 silently drops custom tag keys without this movflag
+             "-movflags", "use_metadata_tags", tagged])
+        try:
+            os.remove(meta)
+        except OSError:
+            pass
+        if r.returncode != 0:
+            raise RuntimeError("metadata remux exited %d" % r.returncode)
+        os.replace(tagged, master_path)
+
     def finalize(self, master_path, mode, waveform, sr,
                  prompt=None, extra_pnginfo=None):
         """Re-stream temps through the gains into one encoder."""
         import torch
+        self._finalized = True     # from here on, failures KEEP their temps
         if self.pending is not None:
             self._stage(self.pending)
             self.pending = None
@@ -159,22 +235,8 @@ class ShotStreamWriter:
                "-s", "%dx%d" % (w, h), "-r", "%.6f" % self.fps, "-i", "-",
                "-i", wav_path,
                "-c:v", "libx264", "-crf", "10", "-preset", "veryfast",
-               "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "320k"]
-        # same container tags SaveVideo writes, so the master itself can be
-        # dropped onto a ComfyUI canvas to recover the graph
-        import json as _json
-        _tagged = False
-        if prompt is not None:
-            cmd += ["-metadata", "prompt=" + _json.dumps(prompt)]
-            _tagged = True
-        if extra_pnginfo is not None:
-            for _k, _v in extra_pnginfo.items():
-                cmd += ["-metadata", "%s=%s" % (_k, _json.dumps(_v))]
-            _tagged = True
-        if _tagged:
-            # mp4 silently drops custom tag keys without this movflag
-            cmd += ["-movflags", "use_metadata_tags"]
-        cmd += ["-shortest", master_path]
+               "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "320k",
+               "-shortest", master_path]
         enc = subprocess.Popen(cmd, stdin=subprocess.PIPE)
         off = 0
         for s in self.shots:
@@ -212,6 +274,18 @@ class ShotStreamWriter:
         if enc.wait() != 0:
             raise RuntimeError("master encode failed - shot temps kept in %s"
                                % self.dir)
+        # Container tags (same keys SaveVideo writes) so the master itself
+        # drops onto a ComfyUI canvas. Two hard-won rules live here:
+        # the JSON goes through an FFMETADATA file, never argv - a real
+        # workflow blows Windows' 32K command-line cap (WinError 206 killed
+        # a finished 27-minute render) - and tagging failures are WARNINGS:
+        # the render is the product, the tags are garnish.
+        try:
+            self._tag(master_path, prompt, extra_pnginfo)
+        except Exception as _te:  # noqa: BLE001
+            print("[H3StreamMaster] WARNING: could not embed workflow "
+                  "metadata (%s) - the master itself is fine." % _te,
+                  flush=True)
         for s in self.shots:
             try:
                 os.remove(s["path"])

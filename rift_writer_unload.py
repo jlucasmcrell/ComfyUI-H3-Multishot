@@ -45,13 +45,27 @@ def _native_root(base_url):
 
 
 def _resident(root, timeout=10.0):
+    """Returns a list, or None meaning 'no native API here'.
+
+    A timeout or a connection reset used to return None too, which the caller
+    reads as "hosted endpoint, nothing on this card to free" - so it printed
+    that and returned WITHOUT attempting the unload, leaving the writer's
+    weights resident and the DiT streaming around them. Distinguish "the
+    server answered and has no native API" (real None) from "the call failed"
+    (unknown - say so, and let the caller try the unload anyway).
+    """
     try:
         with urllib.request.urlopen(root + "/api/ps", timeout=timeout) as r:
             return [(m.get("name") or m.get("model") or "?",
                      int(m.get("size_vram") or 0))
                     for m in json.load(r).get("models", [])]
-    except Exception:
-        return None
+    except urllib.error.HTTPError:
+        return None                      # answered; this API is not there
+    except Exception as _e:              # noqa: BLE001  timeout / refused / DNS
+        print("[H3 Multishot] writer unload: could not query %s/api/ps (%s) - "
+              "attempting the unload anyway rather than assuming there is "
+              "nothing to free." % (root, type(_e).__name__), flush=True)
+        return "unknown"
 
 
 def _unload(base_url, model_name, timeout=10.0):
@@ -64,7 +78,9 @@ def _unload(base_url, model_name, timeout=10.0):
         print("[H3 Multishot] writer unload: %s has no native API (hosted endpoint?) "
               "- nothing on this card to free." % root, flush=True)
         return
-    if not before:
+    if before == "unknown":
+        before = []                      # proceed to the unload blind
+    elif not before:
         print("[H3 Multishot] writer unload: nothing resident.", flush=True)
         return
     wanted = (model_name or "").strip()

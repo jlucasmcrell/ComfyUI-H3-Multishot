@@ -66,7 +66,13 @@ FOR EACH CHARACTER WHO SPEAKS IN THE SHOT, also add:
   invented mumbling. If a shot deliberately shows a mouth
   opening or moving without dialogue, say what is heard in that moment (a dry
   breath, a click of the jaw, silence under the room tone) - an open mouth
-  with unassigned audio becomes invented speech.
+  with unassigned audio becomes invented speech. In a SILENT shot never write
+  the words "lip movement" or "lip sync" anywhere - not in the framing
+  sentence, not in the style sentence. Render-verified 2026-08-17: a silent
+  shot in a chained take whose framing said "visible lip movement clearly
+  readable" re-spoke an EARLIER shot's line word for word (the voice anchor
+  carries that audio; an unassigned mouth played it back). Write "her lips
+  stay pressed shut" and keep the framing about the face only.
 - When a shot reveals something (a door opens, a light snaps on), write the
   revealed thing as already present in the first visible moment - otherwise
   it appears mid-shot out of nothing.

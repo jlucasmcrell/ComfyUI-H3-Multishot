@@ -11,8 +11,12 @@ Measured on the same seed, ship shape (640x1152, 192f, 14 steps, 2026-08-16):
   baseline 621s | Spectrum 441s (-29%) | TeaCache@0.15 531s (-14%)
   | TeaCache@0.30 491s (-21%) | blockcache 551s (-11%)
   | Spectrum+TeaCache stacked 450s - NOT faster than Spectrum alone.
-Side-by-side verdicts on same-seed masters (2026-08-16): blockcache
-indistinguishable from baseline (the shipped default). Spectrum and TeaCache:
+CORRECTION 2026-08-17: the block cache logs "cached 0/14 model forwards" on
+EVERY run at 14 steps, on both a 5090 and a 3090 (11 of 11 runs checked) -
+it is inert at the shipped step count; the -11% above did not reproduce and
+its "indistinguishable" output was indistinguishable because it did nothing.
+Ships OFF now; useful only at 30+ steps where consecutive residuals get
+under its 0.12 threshold. Spectrum and TeaCache:
 visible distortion on PEOPLE (rooms fine). Stacked Spectrum+TeaCache:
 severely damaged. Ambient audio fine on all arms.
 """
@@ -88,16 +92,26 @@ class H3SpeedBoosters:
                            "measured default."}),
             "blockcache": ("BOOLEAN", {
                 "default": False,
-                "tooltip": "About 11% quicker with output indistinguishable "
-                           "from the original in side-by-side comparison - "
-                           "the safe default. Needs "
-                           "comfyui-minimax-h3-blockcache-T8 installed "
+                "tooltip": "Skips model blocks whose input barely changed. "
+                           "At the shipped 14 steps it never fires - measured "
+                           "0 hits on every run on two cards - because 14 "
+                           "steps are too far apart for its 0.12 threshold. "
+                           "Only worth turning on at 30+ steps. Ships OFF. "
+                           "Needs comfyui-minimax-h3-blockcache-T8 installed "
                            "(without it: a printed link, normal speed)."}),
             "easycache": ("BOOLEAN", {
                 "default": False,
                 "tooltip": "About 21% quicker and built into ComfyUI - "
                            "nothing to install. Same advice as the others: "
                            "compare one scene with it on and off."}),
+            # appended last (2.6.0) so saved panels load unchanged
+            "blockcache_threshold": ("FLOAT", {
+                "default": 0.12, "min": 0.0, "max": 1.0, "step": 0.01,
+                "tooltip": "How different two consecutive steps may be before "
+                           "the block cache stops reusing work. 0.12 (the "
+                           "pack's default) never fires at 14 steps; higher "
+                           "values fire more often and drift the image more. "
+                           "Only meaningful with blockcache ON."}),
         }}
 
     RETURN_TYPES = ("MODEL",)
@@ -112,7 +126,7 @@ class H3SpeedBoosters:
                    "faster than Spectrum alone - pick one.")
 
     def boost(self, model, spectrum, teacache, teacache_strength, blockcache,
-              easycache=False):
+              easycache=False, blockcache_threshold=0.12):
         if easycache:
             model = _apply(model, "EasyCache",
                            "built into ComfyUI - update if missing",
@@ -121,7 +135,8 @@ class H3SpeedBoosters:
             model = _apply(model, *_PACKS["teacache"], "TeaCache",
                            rel_l1_thresh=float(teacache_strength))
         if blockcache:
-            model = _apply(model, *_PACKS["blockcache"], "block cache")
+            model = _apply(model, *_PACKS["blockcache"], "block cache",
+                           residual_diff_threshold=float(blockcache_threshold))
         if spectrum:
             model = _apply(model, *_PACKS["spectrum"], "Spectrum",
                            enabled=True)
