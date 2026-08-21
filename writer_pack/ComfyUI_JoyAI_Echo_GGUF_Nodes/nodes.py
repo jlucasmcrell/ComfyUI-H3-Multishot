@@ -3664,34 +3664,92 @@ def _load_refs_rules() -> str:
 _ID_SENTENCE = None
 
 
-def _point_identity_at_refs(prompts):
-    """refs_attached: make the identity sentence deterministic.
+# --- local-Ollama context window -------------------------------------------------
+# Ollama ignores a model's TRAINED context and uses num_ctx from the Modelfile, which is unset
+# on most pulls - so it silently falls back to 4096. This system prompt alone is ~5.5k tokens,
+# so on a local endpoint the RULES WERE BEING TRUNCATED AWAY before the model ever reached the
+# premise. That is the real cause of the empty completions, the JSON dying mid-array, the
+# ignored style bans and the blown dialogue budgets. Measured 2026-08-21: qwen3.8 reports a
+# trained context of 262144 with num_ctx unset in its Modelfile.
+#
+# Ollama passes an "options" object through its OpenAI-compatible endpoint to the runner, so
+# the window is requested per call. Cloud endpoints and non-Ollama servers ignore an unknown
+# top-level field, so this is safe to send everywhere.
+_OLLAMA_NUM_CTX = int(os.environ.get("JOYECHO_NUM_CTX", "32768"))
 
-    The system-prompt rule works for an anonymous ID_A but a premise that
-    NAMES the character ("Dana, sixteen, ...") still came back with a full
-    description ("Dana is a sixteen-year-old ... shoulder-length dark brown
-    hair ...") - and that sentence beats the photographs (same-seed measured).
-    So after generation every sentence of the shape "<Name> is ... <age|hair|
-    face|build|eyes|man|woman|girl|boy|teen> ..." is replaced by the pointer
-    sentence. Wardrobe ("<Name> wears ...") is left alone: wardrobe is a per-
-    scene choice and rotates. Returns (new_prompts, replaced_count)."""
+
+def _is_local_ollama(base_url: str) -> bool:
+    u = (base_url or "").lower()
+    return (("localhost" in u or "127.0.0.1" in u or ":11434" in u or "://ollama" in u)
+            and "cloud" not in u)
+
+
+def _ollama_ctx(base_url: str) -> dict:
+    """{"options": {"num_ctx": N}} for a local Ollama endpoint, {} otherwise."""
+    if not _is_local_ollama(base_url):
+        return {}
+    return {"options": {"num_ctx": _OLLAMA_NUM_CTX}}
+
+
+_REFS_STOPWORDS = frozenset(
+    "a an the it he she they we you i at on in of and or but then when after over under with "
+    "ends end camera shot scene night day morning evening cut cuts".split())
+
+_AGE_PHRASE = None
+
+
+def _point_identity_at_refs(prompts, premise=""):
+    """refs_attached: make the identity sentence deterministic - but only for
+    characters the PREMISE names.
+
+    Render-verified 2026-08-17 (same seed): a written identity description
+    beats attached reference photographs, so named characters' descriptions
+    are replaced with a pointer at the photographs. Two later lessons folded
+    in (2026-08-19/20):
+      - photographs do not carry AGE - if the replaced sentence stated one,
+        the age phrase is kept in the pointer sentence;
+      - photographs only exist for characters the premise itself names. A
+        name the LLM invented (the premise said "a news anchor", the writer
+        called her "Diane") has no photo folder, and pointing her sentence at
+        photographs that do not exist erased her real description and gave
+        the render model nothing. Those sentences are now left as written.
+    Returns (new_prompts, replaced_count, kept_count)."""
     import re as _re
-    global _ID_SENTENCE
+    global _ID_SENTENCE, _AGE_PHRASE
     if _ID_SENTENCE is None:
         _ID_SENTENCE = _re.compile(
             r"\b([A-Z][A-Za-z0-9']*(?:_[A-Z])?) is (?:an? |the )?"
             r"[^.\n]*?\b(?:year|years|-old|hair|face|build|eyes|eyed|skin|"
             r"woman|man|girl|boy|teen\w*|adult|elderly|complexion)"
             r"[^.\n]*\.")
-    out, n = [], 0
+    if _AGE_PHRASE is None:
+        _AGE_PHRASE = _re.compile(
+            r"\b((?:[a-z]+-|\d{1,2}-)year-old(?:\s+(?:girl|boy|woman|man))?"
+            r"|in (?:her|his|their) (?:teens|twenties|thirties|forties|fifties|sixties|seventies))\b",
+            _re.I)
+    allowed = set()
+    for w in _re.findall(r"\b[A-Z][A-Za-z']+\b", premise or ""):
+        if w.lower() not in _REFS_STOPWORDS:
+            allowed.add(w.lower())
+    out, n, kept = [], 0, 0
     for ptxt in prompts:
         def _rep(m):
-            nonlocal n
+            nonlocal n, kept
+            if allowed and m.group(1).lower() not in allowed:
+                kept += 1
+                return m.group(0)          # invented name: no photos exist, keep the description
             n += 1
+            age = _AGE_PHRASE.search(m.group(0))
+            if age:
+                a = age.group(1)
+                if not a.lower().startswith('in '):
+                    a = 'a ' + a          # "sixteen-year-old girl" -> "a sixteen-year-old girl"
+                return ("%s, %s, looks exactly as in the reference photographs "
+                        "- same face, hair and clothing." % (m.group(1), a))
             return ("%s looks exactly as in the reference photographs - same "
-                    "face, hair and age." % m.group(1))
+                    "face, hair and clothing." % m.group(1))
         out.append(_ID_SENTENCE.sub(_rep, str(ptxt)))
-    return out, n
+    return out, n, kept
 
 
 def _spoken_words(shot_text):
@@ -4253,6 +4311,7 @@ class JoyEcho_LLMEnhance:
                              {"role": "user", "content": _rev_user}],
                 "temperature": temperature,
                 "max_tokens": 65536,  # thinking models (minimax-m3) burn 30-40k tokens reasoning; 16384 cut mid-think -> empty content (measured 2026-08-06). Ceiling, not target.
+                **_ollama_ctx(base_url),
             }).encode("utf-8")
             _url = base_url.rstrip("/") + "/chat/completions"
             _hdrs = {"Content-Type": "application/json",
@@ -4332,9 +4391,11 @@ class JoyEcho_LLMEnhance:
             if _rev_lo and _rev_hi:
                 _budget_warn(_fixed, _rev_lo, _rev_hi)
             if refs_attached:
-                _fixed, _nrep = _point_identity_at_refs(_fixed)
+                _fixed, _nrep, _nkept = _point_identity_at_refs(_fixed, story_idea)
                 print(f"[JoyEcho] refs_attached: {_nrep} identity sentence(s) "
-                      "pointed at the reference photographs.", flush=True)
+                      f"pointed at the reference photographs; {_nkept} kept as "
+                      "written (name not in the premise, so no photographs "
+                      "exist for them).", flush=True)
             return (json.dumps({"prompts": _fixed}, ensure_ascii=True),)
 
         if not api_key.strip():
@@ -4470,6 +4531,7 @@ class JoyEcho_LLMEnhance:
             ],
             "temperature": temperature,
             "max_tokens": 65536,  # thinking models (minimax-m3) burn 30-40k tokens reasoning; 16384 cut mid-think -> empty content (measured 2026-08-06). Ceiling, not target.
+            **_ollama_ctx(base_url),
         }).encode("utf-8")
 
         headers = {
@@ -4618,12 +4680,14 @@ class JoyEcho_LLMEnhance:
         num = len(data["prompts"])
 
         if refs_attached:
-            data["prompts"], _nrep = _point_identity_at_refs(data["prompts"])
+            data["prompts"], _nrep, _nkept = _point_identity_at_refs(
+                data["prompts"], story_idea)
             content = json.dumps(data, ensure_ascii=True)
             print(f"[JoyEcho] refs_attached: {_nrep} identity sentence(s) "
-                  "pointed at the reference photographs (a written "
-                  "description would override them - same-seed measured).",
-                  flush=True)
+                  f"pointed at the reference photographs; {_nkept} kept as "
+                  "written (name not in the premise, so no photographs exist "
+                  "for them). A written description beats attached photos - "
+                  "same-seed measured.", flush=True)
 
         print(f"[JoyEcho] LLM generated {num} shot prompt(s).", flush=True)
 

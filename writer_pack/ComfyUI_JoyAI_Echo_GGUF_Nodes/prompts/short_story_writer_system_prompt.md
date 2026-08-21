@@ -36,6 +36,7 @@ FOR EACH CHARACTER WHO SPEAKS IN THE SHOT, also add:
 - the line itself: In a [voice description], ID_X says, \"<the spoken line>\".
 
 ## DIALOGUE (FOR SPEAKING SHOTS ONLY)
+- People talk the way people talk: use contractions everywhere they are natural ("it's", "don't", "I'm", "can't", "there's"). Uncontracted speech ("it is", "do not", "I am") reads as a machine and breaks the illusion. Only a character written as a robot or a formal register speaks uncontracted.
 - The spoken line is short, roughly 10–20 words, natural and in the character's own voice. In a two-speaker shot keep it to one short line each. English only.
 
 ## WHAT THE MODEL RENDERS WELL (not a style guide - a property of the model)
@@ -54,6 +55,15 @@ FOR EACH CHARACTER WHO SPEAKS IN THE SHOT, also add:
 - If the request specifies a shot count, produce exactly that count.
 - Otherwise decide for yourself.
 - Each shot is one continuous clip of the stated length, so the count sets the total runtime.
+
+## FACES CARRY IDENTITY (KEEP THEM IN FRAME)
+
+Identity is re-locked visually, shot by shot, from the reference material and the previous
+shot's closing frames. In every shot where a recurring character appears, their face is
+visible and readable (three-quarter or profile is fine), and the shot ENDS with the face
+still in frame and settled - never on a turned-away head, an exit, or a covered face. A head
+turn returns inside its own shot. A shot that closes on the back of a head hands the next
+shot a stranger.
 
 ## AUDIO IS HALF THE MODEL
 

@@ -21,7 +21,7 @@ Shot 3 prompt...
 `{"prompts": ["...", "..."]}` is also accepted, which is what the LLM
 writer emits.
 
-`shot_count = 0` renders one shot per prompt. Setting it to `1..8` forces
+`shot_count` is the TOTAL number of shots, not a per-prompt multiplier. `shot_count = 0` renders one shot per `---` block - that is the setting you want when you have written the shots yourself. Setting it to `1..8` forces
 that many shots — extra prompts are dropped, and if there are too few, the
 last prompt continues.
 

@@ -2017,10 +2017,12 @@ class H3MultishotSampler:
                            "line. JSON {\"prompts\": [...]} also accepted."}),
             "shot_count": ("INT", {
                 "default": 0, "min": 0, "max": 8,
-                "tooltip": "0 = one shot per script prompt. 1-8 forces the "
-                           "count: extra prompts drop, missing ones continue "
-                           "the last prompt. Every shot renders - this is "
-                           "the real thing here."}),
+                "tooltip": "The TOTAL number of shots - not shots per prompt. "
+                           "Leave it at 0 and the script decides: one shot per "
+                           "--- block, which is what you want for a written scene. "
+                           "1-8 forces the total instead: extra blocks are dropped, "
+                           "and if the script is short the last block repeats as a "
+                           "continuation. Every shot renders."}),
             "width": ("INT", {"default": 768, "min": 32, "max": 4096,
                               "step": 32}),
             "height": ("INT", {"default": 1344, "min": 32, "max": 4096,
@@ -2364,8 +2366,38 @@ class H3MultishotSampler:
                 items.extend({"type": "image", "data": im} for im in images)
                 if voice_block is not None:
                     items.append({"type": "audio"})
+                # The tokenizer emits these as bare "<Picture k>: " / "<Audio j>: "
+                # labels before the prompt. Until 2026-08-21 this sampler sent no
+                # subject_definitions at all, so the model got labelled references
+                # and was never told what they were - the exact gap _subject_defs
+                # was written for, implemented on the memory sampler only.
+                _p = _subject_defs(sum(1 for i in items if i["type"] == "image"),
+                                   sum(1 for i in items if i["type"] == "audio"),
+                                   0,
+                                   # this sampler has no reference_subjects input,
+                                   # so every portrait is <Subject 1>
+                                   image_subjects=None,
+                                   return_parts=True,
+                                   n_chain=len(images))
+                if isinstance(_p, tuple):
+                    prompt = _compose_ref2va(_p[0], _p[1], _p[2], prompt)
+                    if si == 1:
+                        print("[H3Multishot] Ref2VA sections added for %d reference "
+                              "item(s) (%d portrait, %d continuation frame(s))"
+                              % (len(items), len(ref_image_items), len(images)),
+                              flush=True)
                 tokens = clip.tokenize(prompt, minimax_ref_items=items)
             else:
+                import os as _os_ka
+                if images and not _os_ka.environ.get("H3_NO_KF_ALIGN"):
+                    # The documented I2VA first line (base guide 2.1): the
+                    # tokenizer labels this frame "<Picture 1>: " but nothing
+                    # told the model it is the target video's 0.00-second
+                    # frame. Keyframe modes use this alignment line, not the
+                    # ref2va sections.
+                    prompt = ("For the target video, at 0.00 seconds into "
+                              "the target video, <Picture 1> (from [Shot 1]) "
+                              "is fully referenced.\n\n") + prompt
                 tokens = clip.tokenize(prompt, images=images)
             cond_base = clip.encode_from_tokens_scheduled(tokens)
             cond = cond_base
@@ -2757,8 +2789,69 @@ def _parse_ref_groups(spec, n_image):
     return out[:n_image]
 
 
+def _ref2va_task_types(n_image, n_audio, n_video):
+    """The summary's square-bracket task-type prefix, per the Ref2VA guide.
+
+    Chosen from the role each reference actually plays here: pictures guide
+    generation, our <Video> is an earlier moment of the same take, and our
+    <Audio> is referenced for timbre rather than copied.
+    """
+    t = []
+    if n_image:
+        t.append("reference generation")
+    if n_video:
+        t.append("video continuation")
+    if n_audio:
+        t.append("audio reference")
+    return "[%s]" % " + ".join(t or ["reference generation"])
+
+
+def _ref2va_summary(n_image, n_audio, n_video, n_sub, n_chain=0):
+    """One short paragraph naming the subjects and what each reference gives."""
+    s = [_ref2va_task_types(n_image, n_audio, n_video)]
+    who = ("<Subject 1>" if n_sub <= 1 else
+           ", ".join("<Subject %d>" % i for i in range(1, n_sub + 1)))
+    s.append("The target video is one continuous shot of %s." % who)
+    n_portrait = max(0, n_image - int(n_chain or 0))
+    if n_portrait:
+        s.append("%s %s the appearance of %s." %
+                 (", ".join("<Picture %d>" % k for k in range(1, n_portrait + 1)),
+                  "supplies" if n_portrait == 1 else "supply", who))
+    if n_chain:
+        s.append("%s %s the frame this shot continues from." %
+                 (", ".join("<Picture %d>" % k
+                            for k in range(n_portrait + 1, n_image + 1)),
+                  "is" if n_chain == 1 else "are"))
+    if n_video:
+        s.append("%s %s the place, framing and light this shot continues from." %
+                 (", ".join("<Video %d>" % k for k in range(1, n_video + 1)),
+                  "carries" if n_video == 1 else "carry"))
+    if n_audio:
+        s.append("%s supplies <Subject 1>'s voice timbre." %
+                 ", ".join("<Audio %d>" % j for j in range(1, n_audio + 1)))
+    return "summary:\n" + " ".join(s)
+
+
+def _compose_ref2va(defs, summary, retention, body):
+    """The six official sections in the guide's order, body in the middle.
+
+    Order is load-bearing: subject_definitions has to establish <Subject N>
+    BEFORE detailed_description refers to it. Until 2026-08-21 the two label
+    sections were concatenated onto the END of the body instead, so the model
+    read the prose first and the definitions afterwards.
+
+    overall_soundscape is deliberately absent: the writer folds ambience into
+    the paragraph and is forbidden the word "music", so there is no honest
+    source for that section yet. non_diegetic_music: N/A is the guide's own
+    value for "no score", and nothing in the conditioning said so before.
+    """
+    return "\n\n".join([defs, summary, retention,
+                        "detailed_description:\n" + body.strip(),
+                        "non_diegetic_music: N/A"])
+
+
 def _subject_defs(n_image, n_audio, n_video, speaker="the person",
-                  image_subjects=None):
+                  image_subjects=None, return_parts=False, n_chain=0):
     """Official H3 ref2va subject_definitions + retention_analysis block.
 
     The tokenizer emits reference items as bare "<Picture k>: ",
@@ -2810,10 +2903,25 @@ def _subject_defs(n_image, n_audio, n_video, speaker="the person",
          "stays in the same room under the same lighting and colour "
          "temperature."]
     for s in range(2, n_sub + 1):
+        # Affirmative only. The trailing "is never blended with <Subject 1>"
+        # this line used to carry violated the rule stated in the comment
+        # above: at cfg 1.0 the negation has no branch to land in, so it just
+        # names blending in the conditioning. The first clause already carries
+        # the whole intent.
         r.append("<Subject %d> (appears in [Shot 1]): fully_preserved - "
-                 "<Subject %d> retains their own distinct face, skin and hair "
-                 "and is never blended with <Subject 1>." % (s, s))
-    for k in range(1, n_image + 1):
+                 "<Subject %d> retains their own distinct face, skin and hair." % (s, s))
+    # The LAST n_chain pictures are continuation frames, not portraits. Declaring
+    # a whole previous-shot frame as "a reference photograph of <Subject 1>" tells
+    # the model to treat a scene as a face reference, so they get their own line.
+    n_portrait = max(0, n_image - int(n_chain or 0))
+    for k in range(1, n_image + 1):          # numeric order, portraits then chain
+        if k > n_portrait:
+            d.append("<Picture %d> is the first frame of [Shot 1], carried over "
+                     "from the previous shot of this same continuous scene." % k)
+            r.append("<Picture %d> ([Shot 1] continuation anchor): fully_preserved - "
+                     "the shot continues from <Picture %d>, keeping its place, "
+                     "framing, colour temperature and light." % (k, k))
+            continue
         s = subs[k - 1] if k <= len(subs) else 1
         d.append("<Picture %d> is a reference photograph of <Subject %d>."
                  % (k, s))
@@ -2825,11 +2933,20 @@ def _subject_defs(n_image, n_audio, n_video, speaker="the person",
                  "framing, camera distance, room contents and colour "
                  "temperature of <Video %d>." % (k, k))
     for j in range(1, n_audio + 1):
-        d.append("<Audio %d> is the synchronized audio track of <Video %d>, "
-                 "containing <Subject 1>'s speaking voice." % (j, j))
+        # Only claim it is a video's soundtrack when that <Video> label exists -
+        # the guide forbids unresolved reference labels, and with no reference
+        # video this used to point at a <Video 1> that was never defined.
+        d.append(("<Audio %d> is the synchronized audio track of <Video %d>, "
+                  "containing <Subject 1>'s speaking voice." % (j, j)) if j <= n_video
+                 else ("<Audio %d> is a recording of <Subject 1>'s speaking voice."
+                       % j))
         r.append("<Audio %d>: reference - the target audio references the "
                  "voice timbre in <Audio %d> so <Subject 1> speaks with the "
                  "same voice." % (j, j))
+    if return_parts:
+        return ("\n".join(d),
+                _ref2va_summary(n_image, n_audio, n_video, n_sub, n_chain),
+                "\n".join(r))
     return "\n".join(d) + "\n" + "\n".join(r)
 
 
@@ -3013,7 +3130,11 @@ class H3MultishotMemorySampler:
                                              "{\"prompts\": [...]} or plain "
                                              "blocks separated by --- lines."}),
             "shot_count": ("INT", {"default": 0, "min": 0, "max": 64,
-                                   "tooltip": "0 = one shot per script prompt."}),
+                                   "tooltip": "The TOTAL number of shots - not shots per "
+                                   "prompt. 0 = one shot per --- block in the script "
+                                   "(leave it here). Above 0 forces the total: extra "
+                                   "blocks are dropped, a short script repeats its last "
+                                   "block."}),
             "width": ("INT", {"default": 768, "min": 32, "max": 4096, "step": 32}),
             "height": ("INT", {"default": 1344, "min": 32, "max": 4096, "step": 32}),
             "frames_per_shot": ("INT", {"default": 243, "min": 5, "max": 1450,
@@ -4046,13 +4167,20 @@ class H3MultishotMemorySampler:
                         {"resolved_frame_index": frame_count - 1,
                          "image": _kf_b})
                     # the documented FL2VA alignment instruction, first line
+                    # (em dash and wording verbatim from the base guide)
                     prompt = (
                         "How the reference pictures align with the target "
-                        "video - Picture 1 (from Shot 1) aligns with the "
+                        "video — Picture 1 (from Shot 1) aligns with the "
                         "0.00-second mark of the target video; Picture 2 "
                         "(from Shot 1) aligns with the %.2f-second mark of "
                         "the target video.\n\n" % (frame_count / 24.0)
                     ) + prompt
+                elif not __import__("os").environ.get("H3_NO_KF_ALIGN"):
+                    # final plate: one keyframe at frame 0 - the documented
+                    # I2VA alignment line, same first-line contract
+                    prompt = ("For the target video, at 0.00 seconds into "
+                              "the target video, <Picture 1> (from [Shot 1]) "
+                              "is fully referenced.\n\n") + prompt
                 print("[H3Memory] FFLF shot %d: pinned between boundary "
                       "keyframes %d and %d" % (si + 1, si, min(si + 1,
                                                                _n_kf - 1)),
@@ -4068,6 +4196,11 @@ class H3MultishotMemorySampler:
                 kf_vision.append(kf_img)
                 keyframes.append({"resolved_frame_index": 0,
                                   "image": kf_img})
+                # the documented I2VA alignment line for the handed-off frame
+                if not __import__("os").environ.get("H3_NO_KF_ALIGN"):
+                    prompt = ("For the target video, at 0.00 seconds into "
+                              "the target video, <Picture 1> (from [Shot 1]) "
+                              "is fully referenced.\n\n") + prompt
             elif last_tail is not None and continuity == "seamless":
                 kf_img = mmh3._resize(last_tail[-1:], width, height, "disabled")
                 keyframes.append({"resolved_frame_index": 0, "image": kf_img})
@@ -4200,11 +4333,19 @@ class H3MultishotMemorySampler:
             elif ref_items:
                 _n_img = sum(1 for i in ref_items if i["type"] == "image")
                 _groups = _parse_ref_groups(reference_subjects, _n_img)
-                _sd = _subject_defs(
-                    _n_img,
-                    sum(1 for i in ref_items if i["type"] == "audio"),
-                    sum(1 for i in ref_items if i["type"] == "video"),
-                    image_subjects=_groups)
+                _n_aud = sum(1 for i in ref_items if i["type"] == "audio")
+                _n_vid = sum(1 for i in ref_items if i["type"] == "video")
+                # H3_LEGACY_SECTION_ORDER=1 restores the pre-2026-08-21
+                # behaviour (label sections concatenated after the prose) so
+                # the ordering change can be A/B'd on one seed.
+                _legacy_order = bool(__import__("os").environ.get(
+                    "H3_LEGACY_SECTION_ORDER"))
+                _parts = _subject_defs(_n_img, _n_aud, _n_vid,
+                                       image_subjects=_groups,
+                                       return_parts=True)
+                # "" when there are no references at all, else a 3-tuple.
+                _parts = _parts if isinstance(_parts, tuple) else None
+                _sd = "\n".join(_parts) if _parts else ""
                 if _sd:
                     if si == 1:
                         print("[H3Memory] subject_definitions added for %d "
@@ -4225,7 +4366,18 @@ class H3MultishotMemorySampler:
                                   "show DIFFERENT people, set reference_"
                                   "subjects (e.g. '3,3') or they will blend."
                                   % _n_img, flush=True)
-                    prompt = prompt.rstrip() + "\n" + _sd
+                    if _legacy_order:
+                        prompt = prompt.rstrip() + "\n" + _sd
+                    else:
+                        prompt = _compose_ref2va(_parts[0], _parts[1],
+                                                 _parts[2], prompt)
+                        if si == 1:
+                            print("[H3Memory] Ref2VA sections in guide order: "
+                                  "subject_definitions, summary, "
+                                  "retention_analysis, detailed_description, "
+                                  "non_diegetic_music: N/A "
+                                  "(H3_LEGACY_SECTION_ORDER=1 to revert)",
+                                  flush=True)
                 tokens = clip.tokenize(prompt, minimax_ref_items=ref_items)
             else:
                 tokens = clip.tokenize(prompt)

@@ -131,7 +131,7 @@ when connected they win, and when nothing is connected the sampler's own
 widgets apply.
 
 `shot_count` on the panel drives the sampler *and* the prompt writer's
-`num_shots`, so the two can never disagree. `0` means one shot per prompt in
+`num_shots`, so the two can never disagree. `0` means one shot per `---` block in
 the script, and lets the writer decide how many to write.
 
 `use_file_prompts` selects where the scene comes from: **off** reads the
@@ -146,7 +146,7 @@ switch is lazy, so the branch you are not using never executes.
 
 | Dial | Default | What it does |
 |---|---|---|
-| `shot_count` | `0` | `0` = one shot per script prompt. `1..8` forces the count. |
+| `shot_count` | `0` | The TOTAL number of shots, **not** shots per prompt. `0` = one shot per `---` block in the script - leave it there for a written scene. `1..8` forces the total: extra blocks are dropped, a short script repeats its last block. |
 | `continuity` | `context_pin` (full) / n/a (CORE) | `context_pin` pins the previous shot's last 22 frames as **raw latents** — needs the Motion Context pack. `first_frame` uses the model's own trained hand-off — no extra pack. `cut` for episodic work. `seamless` and `seamless_tail` are **legacy** modes kept for comparison: `seamless` is a latent-only soft pin and often still reads as a cut; `seamless_tail` needs interior keyframe anchors and **conflicts with the Motion-Context pack** - with it installed the run stops up front with the alternatives named. |
 | `chain_gain_control` | `off` | Set to `flatten` for chains past about 5 shots. Each shot's tail anchors the next and the model returns ~1.3× the anchor's texture energy, so sharpness **ratchets** across a long chain with a visible step at every seam. `flatten` levels every shot to one house texture. |
 | `color_level` | `off` | Levels each shot's colour statistics to shot 1's settled tail. Not needed when chaining by latents — colour already carries. Useful if you see a warm/cool drift across a long chain. |

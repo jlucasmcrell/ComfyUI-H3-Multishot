@@ -33,6 +33,18 @@ _SEP_RE = re.compile(r"(?m)^---\s*$")
 
 
 def _blocks(script):
+    # The prompt writer emits {"prompts": [...]} - accept that directly so
+    # the writer can feed this node without a format hop (Joy-LTX 2.5 canvas).
+    s = (script or "").strip()
+    if s.startswith("{"):
+        try:
+            import json as _json
+            d = _json.loads(s)
+            arr = d.get("prompts") if isinstance(d, dict) else None
+            if isinstance(arr, list) and arr:
+                return [str(x).strip() for x in arr if str(x).strip()]
+        except ValueError:
+            pass
     parts = [b.strip() for b in _SEP_RE.split(script or "")]
     return [b for b in parts if b]
 

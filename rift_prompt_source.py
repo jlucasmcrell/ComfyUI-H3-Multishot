@@ -74,12 +74,33 @@ _BLOCK_PATTERN = re.compile(
 )
 
 
-def _txt_root() -> Path | None:
+def _txt_roots() -> list[Path]:
+    """EVERY registered inspire_prompts root that exists.
+
+    Taking roots[0] alone was wrong wherever more than one is registered: the Inspire pack
+    registers its own prompts folder, so a corpus added through extra_model_paths.yaml sat at
+    roots[1] and its thousands of .txt files never appeared in the picker (2026-08-20).
+    """
     try:
-        roots = folder_paths.get_folder_paths("inspire_prompts")
-        return Path(roots[0]) if roots else None
+        roots = folder_paths.get_folder_paths("inspire_prompts") or []
     except Exception:
-        return None
+        return []
+    out, seen = [], set()
+    for r in roots:
+        rp = Path(r)
+        k = str(rp).lower()
+        if k not in seen and rp.is_dir():
+            seen.add(k); out.append(rp)
+    return out
+
+
+def _txt_root() -> Path | None:
+    """The root a relative TXT entry resolves against - the first one holding any .txt."""
+    roots = _txt_roots()
+    for r in roots:
+        if next(r.rglob("*.txt"), None) is not None:
+            return r
+    return roots[0] if roots else None
 
 
 def _json_root() -> Path:
@@ -107,10 +128,14 @@ def _json_roots() -> list[Path]:
 
 def _list_files() -> list[str]:
     out = []
-    root = _txt_root()
-    if root and root.is_dir():
+    seen_txt = set()
+    for root in _txt_roots():
         for p in sorted(root.rglob("*.txt")):
-            out.append(_TXT_PREFIX + str(p.relative_to(root)))
+            rel = str(p.relative_to(root))
+            if rel.lower() in seen_txt:
+                continue
+            seen_txt.add(rel.lower())
+            out.append(_TXT_PREFIX + rel)
     # rglob, matching the .txt branch above: a flat glob hides scripts filed in
     # subfolders, which is how anyone organises more than a handful of them.
     # _resolve() already joins the relative path, so nested names round-trip.
@@ -142,8 +167,12 @@ def _folder_list() -> list[str]:
 
 def _resolve(choice: str) -> Path | None:
     if choice.startswith(_TXT_PREFIX):
+        rel = choice[len(_TXT_PREFIX):]
+        for root in _txt_roots():          # the entry may live under any registered root
+            if (root / rel).is_file():
+                return root / rel
         root = _txt_root()
-        return (root / choice[len(_TXT_PREFIX):]) if root else None
+        return (root / rel) if root else None
     if choice.startswith(_JSON_PREFIX):
         rel = choice[len(_JSON_PREFIX):]
         for root in _json_roots():

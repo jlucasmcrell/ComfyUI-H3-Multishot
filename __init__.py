@@ -43,12 +43,19 @@ for _m in ("h3_keyframes",       # keyframe anchors
            "h3_remote_encode",   # CLIP-over-LAN + the /encode server route
            "h3_tae_decode",     # 9 MB draft decode for seed hunts
            "h3_speed_boosters",  # switch panel for optional accelerators
-           "h3_extend"):         # H3ExtendTake: windows from a take length
+           "h3_extend",          # H3ExtendTake: windows from a take length
+           "h3_retake",          # H3Retake: redo one time window of a finished clip
+           "ltx25_multishot"):   # LTX-2.5 multishot sampler (AV-extend joins)
     _merge(_m)
 
 # Teaches ComfyUI-GGUF the minimax_h3 architecture, in memory, at startup.
 # apply_gguf_arch_patch.py is the on-disk fallback for installs where this
 # import cannot reach ComfyUI-GGUF. Harmless when GGUF is not installed.
+try:
+    from . import h3_ltx_patches        # noqa: F401  (LTX x1.5 upsampler, partial-load fix)
+except Exception as _e:                                   # pragma: no cover
+    logging.info("[H3-Multishot] LTX upsampler patch skipped (%s)", _e)
+
 try:
     from . import h3_gguf_arch          # noqa: F401
 except Exception as _e:                                   # pragma: no cover

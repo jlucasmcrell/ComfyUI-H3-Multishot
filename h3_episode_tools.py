@@ -10,6 +10,7 @@ frame, and the segments are joined in-graph. These three nodes are the glue:
   H3ConcatAV     - stage A + stage B frames/audio -> one episode
 """
 import json
+import math
 import re
 
 _BLOCK_SPLIT = re.compile(r"(?m)^---\s*$")
@@ -371,6 +372,7 @@ class H3AutoRefs:
 
         if (characters or "").strip():
             matched = [c.strip() for c in characters.split(",") if c.strip()]
+            matched = matched[:self.MAX_SLOTS]
         else:
             # strip dialogue so absent characters spoken about never match
             # (same scrub as JoyEcho_RefPicker, field-proven)
@@ -398,7 +400,26 @@ class H3AutoRefs:
                 if m:
                     found.append((m.start(), d))
             found.sort()
-            matched = [d for _, d in found[:3]]
+            # Until 2.6.2 this was found[:3]: a five-character script silently
+            # cast only the first three mentioned, while refs_attached had the
+            # writer point ALL of them at photographs - the two uncast ones
+            # rendered as random people (reported on Civitai 2026-08-21).
+            matched = [d for _, d in found[:self.MAX_SLOTS]]
+
+        # Split the model's 9 reference slots across everyone who matched,
+        # instead of letting the first characters exhaust them: 2 characters
+        # keep 3 photos each, 4 get 2, five or more get 1. One photo per
+        # character holds identity less firmly than a 3-photo set - fewer
+        # characters per run is still the stronger setup - but every named
+        # character casting SOMETHING beats two of them casting nobody.
+        per_char = max_per_character
+        if matched:
+            per_char = min(max_per_character,
+                           max(1, self.MAX_SLOTS // len(matched)))
+            if per_char < max_per_character:
+                print(f"[H3AutoRefs] {len(matched)} characters matched - "
+                      f"{per_char} photo(s) each so everyone fits the model's "
+                      f"{self.MAX_SLOTS} reference slots.", flush=True)
 
         images, binds, lines, pic = [], [], [], 1
         for name in matched:
@@ -414,7 +435,7 @@ class H3AutoRefs:
                       "skipping.", flush=True)
                 continue
             nums = []
-            for f in files[:max_per_character]:
+            for f in files[:per_char]:
                 if len(images) >= self.MAX_SLOTS:
                     break
                 img = Image.open(os.path.join(fdir, f))
@@ -565,9 +586,9 @@ class H3StudioControls:
             # inserting either above shifts every saved workflow.
             "shot_count": ("INT", {
                 "default": 0, "min": 0, "max": 30,
-                "tooltip": "How many shots the scene is. 0 = one shot per "
-                           "prompt in the script (and lets the prompt writer "
-                           "decide). Wire this to BOTH the sampler's "
+                "tooltip": "How many shots the scene is, in TOTAL - not shots per "
+                           "prompt. 0 = one shot per --- block in the script (and lets "
+                           "the prompt writer decide). Wire this to BOTH the sampler's "
                            "shot_count and the writer's num_shots so they "
                            "cannot disagree."}),
             "use_file_prompts": ("BOOLEAN", {
@@ -880,6 +901,108 @@ class H3StudioSwitches:
         return tuple(live.get(n, False) for n in self.LEGACY_SLOTS)
 
 
+class H3LTXTakeControls:
+    """MASTER CONTROLS for the LTX-2.5 single-generation canvas (Joy-LTX 2.5).
+
+    LTX renders the whole take in ONE generation. This panel does for LTX what
+    plan_take does for H3: it sizes the render to the card. LTX's cost model is
+    tokens = (W/32)(H/32) x latent frames, and pass 2 (the upscaled refine)
+    runs on the OUTPUT grid - so the upscale factor decides how much a take
+    costs: x2 = 4x the pixels of pass 1, x1.5 = 2.25x, none = pass 1 only.
+    Measured 2026-08-17: 960x544 -> x2 -> 1920x1088 at 193 frames (51k pass-2
+    tokens) renders on 24 GB; 481 frames (124k) hangs a 32 GB card fully
+    offloaded. So `auto` keeps the render size and picks the largest output
+    that fits: x2, then x1.5 (the LTX-2.3 x1.5 spatial upscaler, verified to
+    work on 2.5 latents), then a single pass. It prints the plan.
+    """
+
+    TOKENS_PER_GB = 2200      # pass-2 tokens per GB of card (measured, see docstring)
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {"required": {
+            "width": ("INT", {"default": 960, "min": 256, "max": 1920, "step": 32,
+                "tooltip": "RENDER (pass-1) width. Output = this x the upscale factor "
+                "(960x544 x2 = 1920x1088, x1.5 = 1440x832). Multiples of 32."}),
+            "height": ("INT", {"default": 544, "min": 256, "max": 1920, "step": 32,
+                "tooltip": "Render (pass-1) height; output = this x the upscale factor."}),
+            "take_seconds": ("FLOAT", {"default": 8.0, "min": 1.0, "max": 60.0, "step": 0.5,
+                "tooltip": "Length of the take, rendered in ONE generation. Longer takes "
+                "cost tokens; past what the card fits, auto steps the upscale down "
+                "(x2 -> x1.5 -> none) and prints which. 8 s x2 / ~14 s x1.5 at "
+                "960x544 is the 24 GB comfort zone."}),
+            "beat_seconds": ("FLOAT", {"default": 8.0, "min": 3.0, "max": 15.0, "step": 0.5,
+                "tooltip": "How long each written sentence/beat should be; the writer "
+                "gets take_seconds / beat_seconds beats to write."}),
+            "upscale": (["auto", "x2", "x1.5", "none"], {"default": "auto",
+                "tooltip": "auto = the largest output that fits your card. x2 = the "
+                "official LTX-2.5 spatial upscaler (4x pixels in pass 2). x1.5 = "
+                "the LTX-2.3 spatial x1.5 upscaler file - works on 2.5 latents "
+                "(verified render), 2.25x pixels, so about 1.8x the seconds of "
+                "x2 on the same card. none = pass 1 only at the render size."}),
+        }, "optional": {
+            "vram_gb": ("FLOAT", {"default": 0.0, "min": 0.0, "max": 200.0, "step": 1.0,
+                "tooltip": "0 = read the card. Set a number to plan for another card."}),
+        }}
+
+    RETURN_TYPES = ("INT", "INT", "INT", "BOOLEAN", "BOOLEAN", "INT", "INT", "STRING")
+    RETURN_NAMES = ("pass1_width", "pass1_height", "frames", "two_pass", "use_x15", "beats", "beat_frames", "summary")
+    FUNCTION = "emit"
+    CATEGORY = "H3/episode"
+
+    @staticmethod
+    def _snap32(v):
+        return max(256, int(round(v / 32.0)) * 32)
+
+    @staticmethod
+    def _up15(v):
+        # the rational x1.5 head shuffles x3 then blur-downs /2 -> ceil on odd latent counts
+        return int(math.ceil((v // 32) * 1.5)) * 32
+
+    @staticmethod
+    def _tokens(w, h, frames):
+        return (w // 32) * (h // 32) * ((frames - 1) // 8 + 1)
+
+    def emit(self, width, height, take_seconds, beat_seconds=8.0, upscale="auto", vram_gb=0.0):
+        import math
+        frames = int(round(float(take_seconds) * 24))
+        frames = max(9, int(round((frames - 1) / 8.0)) * 8 + 1)
+        beats = max(1, int(math.ceil(float(take_seconds) / float(beat_seconds))))
+        beat_frames = max(9, int(round((float(beat_seconds) * 24 - 1) / 8.0)) * 8 + 1)
+        total = float(vram_gb) if vram_gb and vram_gb > 0 else 0.0
+        if total <= 0:
+            try:
+                import comfy.model_management as mm
+                total = mm.get_total_memory(mm.get_torch_device()) / (1024 ** 3)
+            except Exception:
+                total = 24.0
+        budget = self.TOKENS_PER_GB * total
+        w, h = self._snap32(width), self._snap32(height)
+        t1 = self._tokens(w, h, frames)
+        t2 = self._tokens(2 * w, 2 * h, frames)
+        w15, h15 = self._up15(w), self._up15(h)
+        t15 = self._tokens(w15, h15, frames)
+        two, use15 = False, False
+        if upscale == "x2" or (upscale == "auto" and t2 <= budget):
+            two = True
+            why = "two passes x2 -> %dx%d (%.0fk pass-2 tokens" % (2 * w, 2 * h, t2 / 1e3)
+            why += ", over the ~%.0fk this %.0f GB card fits - FORCED, expect streaming or an OOM)" % (budget / 1e3, total) if t2 > budget else ", of ~%.0fk this %.0f GB card fits)" % (budget / 1e3, total)
+        elif upscale == "x1.5" or (upscale == "auto" and t15 <= budget):
+            two, use15 = True, True
+            why = "two passes x1.5 -> %dx%d (%.0fk pass-2 tokens" % (w15, h15, t15 / 1e3)
+            why += ", over the ~%.0fk this %.0f GB card fits - FORCED, expect streaming or an OOM)" % (budget / 1e3, total) if t15 > budget else ", of ~%.0fk this %.0f GB card fits; x2 would need %.0fk)" % (budget / 1e3, total, t2 / 1e3)
+        else:
+            why = "ONE pass -> %dx%d (%.0fk tokens; x1.5 would need %.0fk, x2 %.0fk; ~%.0fk fits this %.0f GB card)" % (w, h, t1 / 1e3, t15 / 1e3, t2 / 1e3, budget / 1e3, total)
+            if t1 > budget:
+                why += " - even one pass is over budget: shorten the take or lower the size"
+        summary = ("LTX TAKE: %.1f s -> %d frames in ONE generation | render %dx%d | %s | writer gets %d "
+                   "beat(s) of %d frames" % (float(take_seconds), frames, w, h, why, beats, beat_frames))
+        print("[H3LTXTakeControls] " + summary, flush=True)
+        return (w, h, frames, two, use15, beats, beat_frames, summary)
+
+
+NODE_CLASS_MAPPINGS["H3LTXTakeControls"] = H3LTXTakeControls
+NODE_DISPLAY_NAME_MAPPINGS["H3LTXTakeControls"] = "LTX Take Controls (Joy-LTX 2.5)"
 NODE_CLASS_MAPPINGS["H3AnySwitch"] = H3AnySwitch
 NODE_CLASS_MAPPINGS["H3StudioSwitches"] = H3StudioSwitches
 NODE_DISPLAY_NAME_MAPPINGS["H3AnySwitch"] = "H3 Any Switch (lazy A/B)"

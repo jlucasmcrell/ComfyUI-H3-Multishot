@@ -122,6 +122,86 @@ no Motion-Context → `continuity=first_frame`.
 
 ---
 
+## 2.6.2 - the prompt the model was trained to read
+
+MiniMax publishes the exact prompt format H3 was trained on (their
+`VIDEO_PROMPT_WRITING_GUIDE`, and an agent skill carrying the full-reference
+variant). This release closes the gap between that spec and what this pack
+actually sent.
+
+### Reference prompts are assembled in the documented order
+
+`subject_definitions` has to establish `<Subject 1>` BEFORE the description
+uses it. This pack appended the label sections to the END of the prose, so the
+model read the description first and the definitions afterwards. The six
+sections now go out in the guide's order, and two that were never emitted at
+all have been added: `summary`, with the square-bracket task-type prefix
+(`[reference generation + video continuation + audio reference]`), and
+`non_diegetic_music: N/A` - nothing in the conditioning previously said "no
+score". `H3_LEGACY_SECTION_ORDER=1` restores the old assembly.
+
+### The classic sampler sends subject definitions at all
+
+The tokenizer labels every reference `<Picture k>: ` / `<Audio j>: ` and then
+appends your prompt. Only the memory sampler explained what those labels were;
+the classic multishot sampler sent them bare, so references arrived unexplained
+- the exact failure `subject_definitions` exists to prevent. It now emits them,
+and distinguishes what they are: portraits are reference photographs, while the
+chain frame carried between shots is declared as the shot's continuation
+anchor instead of being described as a face reference.
+
+### Keyframe modes send the alignment line
+
+Keyframe modes do not use the reference sections - they use a documented
+alignment instruction as the prompt's first line. Three paths sent none
+(the classic sampler's chain frame, `first_frame` continuity, and the final
+FFLF plate); the fourth had it with a hyphen where the trained text has an em
+dash. All four now match the guide. `H3_NO_KF_ALIGN=1` disables them.
+
+### Fixed: a negation in the conditioning, and an unresolved label
+
+`retention_analysis` emitted "... and is never blended with `<Subject 1>`".
+There is no negative branch at cfg 1.0, so that clause only put blending into
+the conditioning - thirteen lines below a comment warning about exactly this
+mechanism. The affirmative half already carried the meaning and is all that
+ships now. Separately, `<Audio N>` claimed to be "the synchronized audio track
+of `<Video 1>`" even when no reference video existed, which the guide
+explicitly forbids; with no video it is now described on its own terms.
+
+### Auto Refs: five characters no longer cast three
+
+The prompt scan stopped at the first three characters it found. A five-character
+script left two of them with no photographs while the writer still pointed all
+five at "the reference photographs" - and a character pointed at photos that do
+not exist renders as a random person. The scan now takes up to nine and splits
+the model's nine reference slots across everyone who matched (two characters
+keep three photos each, four get two, five or more get one), printing the split.
+Fewer characters per run still holds a face more firmly, but every named
+character now casts somebody.
+
+### H3 Retake ships
+
+`H3Retake` - redo one stretch of a finished clip and keep the rest - was written
+but never included in the package. Load the clip's frames and audio, set a time
+window, write a prompt for that moment; everything outside the window is frozen
+as raw latents. Picture and sound are independent.
+
+### Also in 2.6.2
+
+- The prompt picker walks every registered `inspire_prompts` root, not just the
+  first - a corpus added through `extra_model_paths.yaml` sat at `roots[1]` and
+  never appeared.
+- `rift_engine_script` accepts the writer's `{"prompts": [...]}` directly.
+- Bundled writer rules: faces stay readable and each shot ends on the face
+  (identity re-locks from a shot's closing frames, so a block that ends on the
+  back of a head hands the next block a stranger); the strange thing never turns
+  to the lens and the environment never reacts on cue; the model's own
+  camera-motion vocabulary, with `Static Shot` as the affirmative way to hold a
+  camera; the anti-merge rule rewritten affirmatively; "mood" dropped from the
+  paragraph recipe and from the bundled example that was teaching it.
+- Writer node: `num_ctx` is set for local Ollama endpoints (the 4096 default
+  silently truncated long system prompts).
+
 ## 2.6.1 - hotfix for ComfyUI master
 
 - **`AttributeError: MiniMaxH3ReferenceToVideo has no attribute '_encode_ref_audio'`**
@@ -1502,7 +1582,7 @@ This is also why `seed_per_shot` should stay ON - see the settings table.
 
 | Dial | Shipped | What it does |
 | --- | --- | --- |
-| `shot_count` | `0` | `0` = one shot per prompt block in the script. A number forces that many shots. |
+| `shot_count` | `0` | The TOTAL number of shots, **not** shots per prompt. `0` = one shot per `---` block in the script. A number forces that total: extra blocks are dropped, a short script repeats its last block. |
 | `seed_per_shot` | `ON` | Derives a distinct seed per shot. **Leave this ON.** Measured: per-shot seeds *hold* the face; reusing one seed for every shot drifted both face and voice. |
 | `continuity` | `context_pin` | `first_frame` (no deps), `context_pin` (needs Motion-Context), `flf_chain` (hard boundary-plate mode; requires plates, and raises an error without them). `seamless`/`seamless_tail` are legacy comparison modes: `seamless` is a soft latent-only pin that often reads as a cut; `seamless_tail` conflicts with Motion-Context and stops up front when that pack is installed. |
 | `chain_gain_control` | - | Set to `flatten` on chains past about 5 shots. Seam texture ratchets roughly 1.3x per join - each shot sharpens the one after it - and `flatten` stops the compounding. |
