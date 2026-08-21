@@ -122,6 +122,37 @@ no Motion-Context → `continuity=first_frame`.
 
 ---
 
+## 2.6.3 - one number for window length, and remote encoding that fails fast
+
+### frames_per_shot now rules extend mode too
+
+The MASTER CONTROLS panel had two silent authorities over window length: the
+`frames_per_shot` widget in normal mode, and the `window` combo the moment
+`take_seconds` was set - with the widget you had just typed sitting there
+ignored. Now `window = auto` FOLLOWS the frames widget (snapped to the 17k+5
+grid, and the console says so), an explicit `window` value still wins, and the
+old VRAM-based sizing lives on as a new option, `fit this card (VRAM auto)` -
+pick it when you want the fewest joins that will not thrash rather than a
+specific length. One number, every mode. The shipped canvas is pinned to 243 so
+existing setups render exactly what they rendered before.
+
+### The remote encoder checks the address before the writer runs
+
+A wrong or placeholder endpoint used to surface at the FIRST ENCODE - after the
+LLM writer had already spent minutes producing a script that was then thrown
+away. The node now checks the address the moment it executes: an empty box, the
+untouched `OTHER-PC` placeholder, and an unreachable host each fail in about a
+second with a message that says exactly what to fix.
+
+### Remote encoding no longer pays a first-shot penalty
+
+With the text encoder on another box, nothing ever evicted the models LEFT OVER
+from the previous run - the reserve planner saw a nearly-full card, went to its
+tight path, and the pool spilled into driver memory (measured: shot 1 at 65
+s/it against 27 s/it once shot 2's normal eviction cleared a stale 15 GB
+encoder). Both samplers now sweep leftovers once before the first DiT load
+when the encoder is remote, and print what they cleared.
+
 ## 2.6.2 - the prompt the model was trained to read
 
 MiniMax publishes the exact prompt format H3 was trained on (their

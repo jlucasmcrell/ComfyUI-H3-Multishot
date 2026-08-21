@@ -2447,6 +2447,25 @@ class H3MultishotSampler:
                     print(f"[H3Multishot] TE on {_te_dev}, DiT on {_dit_dev} "
                           f"- separate devices, TE stays resident (no "
                           f"per-shot reload).", flush=True)
+                    # sweep stale models from earlier runs once - a remote TE
+                    # loads nothing locally, so nothing evicts them otherwise
+                    # (same spill as the memory sampler, measured 2026-08-21)
+                    try:
+                        _dev0 = _mm.get_torch_device()
+                        _b40 = _mm.get_free_memory(_dev0) / (1024 ** 3)
+                        try:
+                            _mm.unload_all_models()
+                        except Exception:
+                            pass
+                        _mm.free_memory(_mm.get_total_memory(_dev0) * 0.9, _dev0)
+                        _mm.soft_empty_cache()
+                        _af0 = _mm.get_free_memory(_dev0) / (1024 ** 3)
+                        if _af0 - _b40 > 0.5:
+                            print("[H3Multishot] cleared %.1f GB of leftovers "
+                                  "from earlier runs before the first DiT "
+                                  "load." % (_af0 - _b40), flush=True)
+                    except Exception:
+                        pass
             else:
                 try:
                     clip.patcher.model.to(_mm.text_encoder_offload_device())
@@ -4654,6 +4673,27 @@ class H3MultishotMemorySampler:
                 if si == 0:
                     print(f"[H3Memory] TE on {_te_dev}, DiT on {_dit_dev} - "
                           f"separate devices, TE stays resident.", flush=True)
+                    # A remote TE loads nothing locally - but models left over
+                    # from the PREVIOUS run may still be resident, and skipping
+                    # the sweep hands AutoReserve a card that looks nearly full
+                    # (measured 2026-08-21: a stale 15 GB TE -> TIGHT path ->
+                    # driver spill -> shot 1 at 65 s/it vs 27 s/it clean).
+                    try:
+                        _dev0 = _mm.get_torch_device()
+                        _b40 = _mm.get_free_memory(_dev0) / (1024 ** 3)
+                        try:
+                            _mm.unload_all_models()
+                        except Exception:
+                            pass
+                        _mm.free_memory(_mm.get_total_memory(_dev0) * 0.9, _dev0)
+                        _mm.soft_empty_cache()
+                        _af0 = _mm.get_free_memory(_dev0) / (1024 ** 3)
+                        if _af0 - _b40 > 0.5:
+                            print("[H3Memory] cleared %.1f GB of leftovers "
+                                  "from earlier runs before the first DiT "
+                                  "load." % (_af0 - _b40), flush=True)
+                    except Exception:
+                        pass
             else:
                 try:
                     clip.patcher.model.to(_mm.text_encoder_offload_device())

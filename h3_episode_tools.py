@@ -603,13 +603,14 @@ class H3StudioControls:
             "take_seconds": ("FLOAT", {
                 "default": 0.0, "min": 0.0, "max": 600.0, "step": 0.5,
                 "tooltip": "EXTEND TAKE: 0 = off. Any other value = the length "
-                           "of the finished take; frames_per_shot and "
-                           "shot_count above are then OVERRIDDEN by a window "
-                           "sized for this card (see 'window') and the count "
+                           "of the finished take; frames_per_shot above then "
+                           "sets the WINDOW length (snapped to the grid), "
+                           "shot_count is replaced by the computed count "
                            "that fills the time. Set the writer's join_style "
                            "to 'extend take' so it writes ONE speech across "
                            "the windows."}),
-            "window": (["auto", "243", "226", "209", "192", "175", "158",
+            "window": (["auto", "fit this card (VRAM auto)",
+                        "243", "226", "209", "192", "175", "158",
                         "141", "124", "107", "90"], {
                 "default": "auto",
                 "tooltip": "Frames per window when take_seconds is set. auto "
@@ -636,7 +637,24 @@ class H3StudioControls:
              use_file_prompts=False, take_seconds=0.0, window="auto",
              model=None):
         if take_seconds and take_seconds > 0:
-            from .h3_extend import plan_take
+            from .h3_extend import plan_take, _WINDOWS
+            # ONE number rules both modes (2.6.3): 'auto' follows the
+            # frames_per_shot widget above, snapped to the legal grid, so the
+            # panel no longer has two silent authorities over window length.
+            # The old VRAM-based sizing lives on as its own combo option.
+            if window == "auto":
+                snapped = min(_WINDOWS, key=lambda w: abs(w - frames_per_shot))
+                if snapped != frames_per_shot:
+                    print("[H3StudioControls] extend take: frames_per_shot %d "
+                          "is off the 17k+5 grid - snapped to %d"
+                          % (frames_per_shot, snapped), flush=True)
+                print("[H3StudioControls] extend take: window follows the "
+                      "frames_per_shot widget -> %df (pick 'fit this card "
+                      "(VRAM auto)' on 'window' for the old auto sizing)"
+                      % snapped, flush=True)
+                window = str(snapped)
+            elif window.startswith("fit this card"):
+                window = "auto"
             n, f, total, summary = plan_take(take_seconds, window, width,
                                              height, 24, 22, model)
             frames_per_shot, shot_count = f, n

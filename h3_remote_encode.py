@@ -342,8 +342,50 @@ class H3RemoteTextEncoderClip:
     def make(self, endpoint, clip_name, timeout_seconds, clip_type="minimax"):
         cache = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                              "cond_cache")
+        self._preflight(endpoint)
         return (_RemoteClipProxy(endpoint, clip_name, clip_type,
                                  int(timeout_seconds), cache),)
+
+    @staticmethod
+    def _preflight(endpoint):
+        """Fail here, not at the first encode.
+
+        Without this the run reaches the sampler before anyone finds out the
+        box is unreachable - and on a writer-driven graph that is after the
+        LLM has spent minutes producing a script that is then thrown away
+        (reported 2026-08-21: three attempts, ~7 minutes of writer time, the
+        placeholder endpoint never edited). Two seconds of connect timeout
+        here turns that into an instant, obvious failure.
+        """
+        url = (endpoint or "").rstrip("/")
+        if not url:
+            raise RuntimeError(
+                "H3 Remote Text Encoder: the endpoint is empty. Put in the "
+                "address of the ComfyUI PC that will serve encodes, e.g. "
+                "http://your-other-pc:8188 . It needs this pack installed and "
+                "the encoder file in its models/text_encoders. (Or turn "
+                "remote_encoder off on the H3 Studio Switches panel to "
+                "encode on this machine.)")
+        if "OTHER-PC" in url.upper():
+            raise RuntimeError(
+                "H3 Remote Text Encoder is still set to the placeholder "
+                "address %s. Replace it with the address of the ComfyUI PC "
+                "that will serve encodes - it needs this pack installed (the "
+                "route registers on load) and the encoder file in its "
+                "models/text_encoders. (Or turn remote_encoder off on the H3 "
+                "Studio Switches panel to encode on this machine.)" % url)
+        try:
+            req = urllib.request.Request(url + "/system_stats",
+                                         headers={"Accept": "application/json"})
+            urllib.request.urlopen(req, timeout=5).read(1)
+        except Exception as e:
+            raise RuntimeError(
+                "H3 Remote Text Encoder cannot reach %s (%s). Check that "
+                "ComfyUI is running on that box with this pack installed, and "
+                "that the address and port are right - a hostname that does "
+                "not resolve gives exactly this error, so try the IP. (Or "
+                "turn remote_encoder off on the H3 Studio Switches panel to "
+                "encode on this machine.)" % (url, e)) from e
 
 
 NODE_CLASS_MAPPINGS = {"H3RemoteTextEncoderClip": H3RemoteTextEncoderClip}
