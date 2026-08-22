@@ -2607,79 +2607,6 @@ class H3MultishotSampler:
             if imgs.ndim == 5:
                 imgs = imgs.reshape(-1, imgs.shape[-3], imgs.shape[-2],
                                     imgs.shape[-1])
-            if (continuity == "context_pin"
-                    and chain_gain_control == "refresh_pin"):
-                # REFRESH THE CARRIER IN THE PIXEL DOMAIN. Every earlier lever
-                # either cleaned shipped frames after the loop (flatten,
-                # master_normalize) or softened the pin through a latent
-                # high-pass that under-reads decoded sharpness ~2.5x
-                # (flatten_pin). Here the pin's video tail is decoded pixels
-                # levelled to house/(running hop gain) and RE-ENCODED, so the
-                # model's own ~1.15x gain lands the next shot ON the house
-                # level instead of above it: L * (1/g) * g = L by
-                # construction. Audio lane stays bit-identical raw - the
-                # voice chain must never round-trip a VAE. Any failure falls
-                # back to the raw pin.
-                try:
-                    import torch as _tt_rp
-                    import torch.nn.functional as _F_rp
-                    _zr = out["samples"]
-                    _nested_rp = getattr(_zr, "is_nested", False)
-                    _vlat = _zr.unbind()[0] if _nested_rp else _zr
-                    _pf_rp = int(str(pin_frames)) if str(pin_frames) in (
-                        "5", "22", "39", "56") else 22
-                    # pixel tail long enough to encode >= _pf_rp latent frames
-                    _tratio = max(1.0, imgs.shape[0] / float(_vlat.shape[2]))
-                    _npix = min(imgs.shape[0],
-                                int(_pf_rp * _tratio) + int(_tratio) + 4)
-                    _ptail = imgs[-_npix:].detach().float()
-                    # amplitude vs the house Laplacian reference (_cg_ref,
-                    # maintained by the frame-flatten path from shot 1)
-                    _gy = _ptail.mean(-1)
-                    _k4 = (_gy[:, 1:-1, 1:-1] * 4 - _gy[:, :-2, 1:-1]
-                           - _gy[:, 2:, 1:-1] - _gy[:, 1:-1, :-2]
-                           - _gy[:, 1:-1, 2:])
-                    _lap_raw = float(_k4.pow(2).mean())
-                    if si > 0 and _cg_ref and _lap_raw > 1e-12:
-                        _r_amp = (_lap_raw / float(_cg_ref)) ** 0.5
-                        if _r_amp > 1.0:
-                            _rp_gain = 0.5 * _rp_gain + 0.5 * _r_amp
-                        _gp = min(1.0, max(0.4, (float(_cg_ref) / _lap_raw)
-                                           ** 0.5 / _rp_gain))
-                    else:
-                        _gp = 1.0 if not _cg_ref else min(1.0, max(
-                            0.4, 1.0 / _rp_gain))
-                    _bt = _ptail.movedim(-1, 1)
-                    _lowp = _F_rp.avg_pool2d(_bt, 5, stride=1, padding=2,
-                                             count_include_pad=False)
-                    _lvl = (_lowp + _gp * (_bt - _lowp)).clamp(0, 1)
-                    _lvl = _lvl.movedim(1, -1)
-                    _z_new = video_vae.encode(_lvl)
-                    if _z_new.ndim == 4:
-                        _z_new = _z_new.unsqueeze(0)
-                    if _z_new.shape[2] >= _pf_rp:
-                        _vnew = _vlat.clone()
-                        _vnew[:, :, -_pf_rp:] = _z_new[
-                            :, :, -_pf_rp:].to(_vnew.dtype).to(_vnew.device)
-                        if _nested_rp:
-                            import comfy.nested_tensor as _nt_rp
-                            _cc_rp = list(_zr.unbind())
-                            _cc_rp[0] = _vnew
-                            _cp_prev = {"samples":
-                                        _nt_rp.NestedTensor(_cc_rp)}
-                        else:
-                            _cp_prev = {"samples": _vnew}
-                        print("[H3Memory] refresh_pin: tail re-encoded from "
-                              "levelled pixels (band gain %.3f, hop gain est "
-                              "%.3f, %d latent frames spliced, audio raw)"
-                              % (_gp, _rp_gain, _pf_rp), flush=True)
-                    else:
-                        print("[H3Memory] refresh_pin: encode returned %d "
-                              "latent frames < pin %d - raw pin kept"
-                              % (_z_new.shape[2], _pf_rp), flush=True)
-                except Exception as _rp_e:
-                    print("[H3Memory] refresh_pin FAILED (%s) - raw pin "
-                          "kept for this join" % _rp_e, flush=True)
             aud = vae_decode_audio(audio_vae, out)
             sr = aud["sample_rate"]
             wav = aud["waveform"]
@@ -5162,6 +5089,79 @@ class H3MultishotMemorySampler:
             if imgs.ndim == 5:
                 imgs = imgs.reshape(-1, imgs.shape[-3], imgs.shape[-2],
                                     imgs.shape[-1])
+            if (continuity == "context_pin"
+                    and chain_gain_control == "refresh_pin"):
+                # REFRESH THE CARRIER IN THE PIXEL DOMAIN. Every earlier lever
+                # either cleaned shipped frames after the loop (flatten,
+                # master_normalize) or softened the pin through a latent
+                # high-pass that under-reads decoded sharpness ~2.5x
+                # (flatten_pin). Here the pin's video tail is decoded pixels
+                # levelled to house/(running hop gain) and RE-ENCODED, so the
+                # model's own ~1.15x gain lands the next shot ON the house
+                # level instead of above it: L * (1/g) * g = L by
+                # construction. Audio lane stays bit-identical raw - the
+                # voice chain must never round-trip a VAE. Any failure falls
+                # back to the raw pin.
+                try:
+                    import torch as _tt_rp
+                    import torch.nn.functional as _F_rp
+                    _zr = out["samples"]
+                    _nested_rp = getattr(_zr, "is_nested", False)
+                    _vlat = _zr.unbind()[0] if _nested_rp else _zr
+                    _pf_rp = int(str(pin_frames)) if str(pin_frames) in (
+                        "5", "22", "39", "56") else 22
+                    # pixel tail long enough to encode >= _pf_rp latent frames
+                    _tratio = max(1.0, imgs.shape[0] / float(_vlat.shape[2]))
+                    _npix = min(imgs.shape[0],
+                                int(_pf_rp * _tratio) + int(_tratio) + 4)
+                    _ptail = imgs[-_npix:].detach().float()
+                    # amplitude vs the house Laplacian reference (_cg_ref,
+                    # maintained by the frame-flatten path from shot 1)
+                    _gy = _ptail.mean(-1)
+                    _k4 = (_gy[:, 1:-1, 1:-1] * 4 - _gy[:, :-2, 1:-1]
+                           - _gy[:, 2:, 1:-1] - _gy[:, 1:-1, :-2]
+                           - _gy[:, 1:-1, 2:])
+                    _lap_raw = float(_k4.pow(2).mean())
+                    if si > 0 and _cg_ref and _lap_raw > 1e-12:
+                        _r_amp = (_lap_raw / float(_cg_ref)) ** 0.5
+                        if _r_amp > 1.0:
+                            _rp_gain = 0.5 * _rp_gain + 0.5 * _r_amp
+                        _gp = min(1.0, max(0.4, (float(_cg_ref) / _lap_raw)
+                                           ** 0.5 / _rp_gain))
+                    else:
+                        _gp = 1.0 if not _cg_ref else min(1.0, max(
+                            0.4, 1.0 / _rp_gain))
+                    _bt = _ptail.movedim(-1, 1)
+                    _lowp = _F_rp.avg_pool2d(_bt, 5, stride=1, padding=2,
+                                             count_include_pad=False)
+                    _lvl = (_lowp + _gp * (_bt - _lowp)).clamp(0, 1)
+                    _lvl = _lvl.movedim(1, -1)
+                    _z_new = video_vae.encode(_lvl)
+                    if _z_new.ndim == 4:
+                        _z_new = _z_new.unsqueeze(0)
+                    if _z_new.shape[2] >= _pf_rp:
+                        _vnew = _vlat.clone()
+                        _vnew[:, :, -_pf_rp:] = _z_new[
+                            :, :, -_pf_rp:].to(_vnew.dtype).to(_vnew.device)
+                        if _nested_rp:
+                            import comfy.nested_tensor as _nt_rp
+                            _cc_rp = list(_zr.unbind())
+                            _cc_rp[0] = _vnew
+                            _cp_prev = {"samples":
+                                        _nt_rp.NestedTensor(_cc_rp)}
+                        else:
+                            _cp_prev = {"samples": _vnew}
+                        print("[H3Memory] refresh_pin: tail re-encoded from "
+                              "levelled pixels (band gain %.3f, hop gain est "
+                              "%.3f, %d latent frames spliced, audio raw)"
+                              % (_gp, _rp_gain, _pf_rp), flush=True)
+                    else:
+                        print("[H3Memory] refresh_pin: encode returned %d "
+                              "latent frames < pin %d - raw pin kept"
+                              % (_z_new.shape[2], _pf_rp), flush=True)
+                except Exception as _rp_e:
+                    print("[H3Memory] refresh_pin FAILED (%s) - raw pin "
+                          "kept for this join" % _rp_e, flush=True)
             aud = vae_decode_audio(audio_vae, out)
             sr = aud["sample_rate"]
             wav = aud["waveform"]
