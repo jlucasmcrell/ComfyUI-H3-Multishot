@@ -406,7 +406,7 @@ character:
 ```
 <refs_root>/
     DANA/     dana_wide_01.png  dana_wide_02.png  ...
-    GLYPH/    glyph_wide_01.png ...
+    ROOK/     rook_wide_01.png ...
     MARCUS/   ...
 ```
 
@@ -468,7 +468,7 @@ it must differ from them.
 | `on_no_match` | `no_reference` | `no_reference` (default) warns in the console and renders without photos when nothing matches; the writer is told (`found` = false) and describes the person normally. `error` stops the run instead - and because AutoRefs now runs BEFORE the writer, it stops before the writer spends its minutes. |
 
 **The gotcha worth knowing.** The scan reads the *prose*, so the character must
-be named there. A scene called `09_glyph_reaches_through_the_front_door.txt`
+be named there. A scene called `09_rook_reaches_through_the_front_door.txt`
 whose description only says "a seven-foot figure of liquid chrome" matches
 nothing - the filename is not scanned. Around 18% of our own archive scenes are
 written that way. Two fixes: name the character in the description, or type the

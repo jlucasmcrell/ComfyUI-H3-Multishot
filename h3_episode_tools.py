@@ -823,7 +823,28 @@ class H3AnySwitch:
 
     def check_lazy_status(self, use_on, off_path=None, on_path=None,
                           prompt=None, unique_id=None):
-        return ["on_path" if use_on else "off_path"]
+        want = "on_path" if use_on else "off_path"
+        # Only request an input that is actually LINKED in the submitted
+        # prompt. Requesting an unlinked lazy input raises NodeInputError and
+        # kills the whole queue item - and a stale browser tab that survived a
+        # server restart can silently drop a link the saved canvas still has
+        # (2026-08-21: 20 queue items died in 0.11 s each on a link the disk
+        # copy had). Falling through lets pick() take the other path with a
+        # loud warning instead.
+        try:
+            links = (prompt or {}).get(str(unique_id), {}).get("inputs", {})
+            if not isinstance(links.get(want), list):        # a link is [node_id, slot]
+                other = "off_path" if use_on else "on_path"
+                if isinstance(links.get(other), list):
+                    print("[H3AnySwitch] %s is selected but NOT CONNECTED in "
+                          "the submitted graph (stale browser tab? reload the "
+                          "workflow from the sidebar) - falling back to %s."
+                          % (want, other), flush=True)
+                    return [other]
+                return []                                    # neither wired; pick() reports
+        except Exception:
+            pass
+        return [want]
 
     def pick(self, use_on, off_path=None, on_path=None, prompt=None,
              unique_id=None):

@@ -45,7 +45,8 @@ for _m in ("h3_keyframes",       # keyframe anchors
            "h3_speed_boosters",  # switch panel for optional accelerators
            "h3_extend",          # H3ExtendTake: windows from a take length
            "h3_retake",          # H3Retake: redo one time window of a finished clip
-           "ltx25_multishot"):   # LTX-2.5 multishot sampler (AV-extend joins)
+           "ltx25_multishot",
+           "h3_qgraft"):       # H3QGraftPatch: donor attention-envelope graft (experimental)   # LTX-2.5 multishot sampler (AV-extend joins)
     _merge(_m)
 
 # Teaches ComfyUI-GGUF the minimax_h3 architecture, in memory, at startup.

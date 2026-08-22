@@ -951,6 +951,30 @@ def _install_auto_reserve(patcher, model_name):
             _w = int(patcher.model_size())
             _cap = int(_free - _w - _AUTO_KEEPOUT)
             if _cap <= 0:
+                # Before accepting the tight regime, sweep leftovers: an item
+                # that died without a clean boundary leaves the previous
+                # model resident, and only the multishot remote-TE lane had a
+                # shot-1 sweep - the classic/local-TE lane planned against
+                # the stale number and paged at 141 W (twice, 2026-08-22).
+                # Everything resident here has finished its work (the TE
+                # encodes before the DiT plans), so unloading costs one
+                # reload at worst; ComfyUI reloads on demand.
+                try:
+                    _before_sw = _free
+                    _cm.unload_all_models()
+                    _cm.free_memory(_cm.get_total_memory(_dev) * 0.9, _dev)
+                    _free = _cm.get_free_memory(_dev)
+                    _cap = int(_free - _w - _AUTO_KEEPOUT)
+                    if _free - _before_sw > 2**30:
+                        print("[H3AutoReserve] cleared %.1f GB of leftovers "
+                              "before reserve planning (reported free "
+                              "%.1f -> %.1f GB)."
+                              % ((_free - _before_sw) / 2**30,
+                                 _before_sw / 2**30, _free / 2**30),
+                              flush=True)
+                except Exception:
+                    pass
+            if _cap <= 0:
                 # The weights alone exceed free VRAM. Reserving the measured
                 # pool here is the WORST possible move: every byte of reserve
                 # pushes another byte of weights out, and the old `_cap > 0`
@@ -1058,12 +1082,59 @@ def _install_auto_reserve(patcher, model_name):
                 else:
                     # No measurement says the cut goes below need, so this is
                     # margin-trimming: keep the weights resident. Measured
-                    # 2026-08-12: a 399 MB weight shortfall cost 15x.
-                    reserve = max(_cap, _AUTO_MIN_POOL)
-                    how += (" | CLAMPED %.1f -> %.1f GB to keep the weights "
-                            "(%.1f GB) resident out of %.1f GB free"
-                            % (_was / 2**30, reserve / 2**30, _w / 2**30,
-                               _free / 2**30))
+                    # 2026-08-12: a 399 MB weight shortfall cost 15x streaming.
+                    # BUT the opposite cliff is real too (2026-08-21, 5090):
+                    # trimming a BORROWED pool's margin to squeeze 20.4 GB of
+                    # weights fully resident left ~0.6 GB of slack where the
+                    # streaming path keeps ~1.9, and the peak spilled into
+                    # driver memory - 590 s/it against the streaming path's 27
+                    # on the same total budget. The trim gamble is only worth
+                    # taking when it is SMALL: if keeping the weights resident
+                    # means eating more than 0.75 GB of the pool's margin,
+                    # stream a sliver instead - that side of the trade is
+                    # measured shallow (1-2 GB streaming ~ 27 s/it all day).
+                    # The discriminator is HEADROOM, not trim size: every
+                    # clean run keeps ~9% of the card as driver slack, and
+                    # both measured crawls ran with less (65 s/it at reduced
+                    # slack, 590 s/it at ~0.6 GB). Keep the weights resident
+                    # ONLY if the clamped pool still holds the bare need PLUS
+                    # the full driver-headroom bump; otherwise stream - the
+                    # multi-GB streaming regime is measured shallow (~27 s/it
+                    # all day on this card).
+                    try:
+                        import comfy.model_management as _mmt
+                        _tt = _mmt.get_total_memory(_mmt.get_torch_device())
+                    except Exception:
+                        _tt = _free
+                    _full_bump = max(0, int(_tt * 0.09) - _AUTO_KEEPOUT)
+                    _clamp_res = max(_cap, _AUTO_MIN_POOL)
+                    _bare = int(_known_need) if _known_need else int(reserve / 1.25)
+                    if _clamp_res - _bare < _full_bump:
+                        reserve = min(_bare + _full_bump, _card_max)
+                        how += (" | resident-clamp REFUSED (slack %.1f GB < "
+                                "headroom %.1f GB): streaming"
+                                % ((_clamp_res - _bare) / 2**30,
+                                   _full_bump / 2**30))
+                        print("[H3AutoReserve] keeping all %.1f GB of weights "
+                              "resident would leave only %.1f GB of slack "
+                              "over the pool's bare need - under the %.1f GB "
+                              "driver headroom every clean run keeps "
+                              "(2026-08-21: that squeeze ran 22x slower than "
+                              "streaming). Reserving %.1f GB and letting "
+                              "~%.1f GB of weights stream."
+                              % (_w / 2**30, (_clamp_res - _bare) / 2**30,
+                                 _full_bump / 2**30, reserve / 2**30,
+                                 max(0.0, (_w - (_free - reserve
+                                 - _AUTO_KEEPOUT))) / 2**30), flush=True)
+                        _clamped_resident = False
+                    else:
+                        reserve = _clamp_res
+                        _clamped_resident = True
+                    if _clamped_resident:
+                        how += (" | CLAMPED %.1f -> %.1f GB to keep the "
+                                "weights (%.1f GB) resident out of %.1f GB "
+                                "free" % (_was / 2**30, reserve / 2**30,
+                                          _w / 2**30, _free / 2**30))
                     # Only shout when the pre-clamp figure came from EVIDENCE.
                     # On a first run at an unseen shape there is no
                     # measurement, and `_was` is the placeholder from the
