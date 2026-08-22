@@ -4,7 +4,7 @@
 
 MiniMax-H3 natively generates blocks of roughly 10-15 seconds. This pack chains those blocks into a scene of arbitrary length and joins them so the result reads as a single unedited camera take rather than a cut sequence. It ships two independent chaining mechanisms, a complete single-purpose workflow (plus a variant with zero third-party dependencies), a dual-format model loader (safetensors + GGUF), and the GGUF architecture patch H3 needs.
 
-Current release: **v2.6.1 - MiniMax-H3 Seamless Chain: the extend take** (2.6.1 = ComfyUI-master hotfix).
+Current release: **v2.6.5** - canvases redrawn left-to-right in numbered lanes, unique workflow ids, a leftover-VRAM sweep in the reserve planner, and a watchdog on the master assembly.
 
 - Guides: [the 5-minute guide](https://civitai.com/articles/34047/make-talking-videos-with-minimax-h3-the-5-minute-guide-26) and [every setting explained](https://civitai.com/articles/34046/every-setting-explained-the-seamless-chain-deep-manual)
 - GitHub: <https://github.com/jlucasmcrell/ComfyUI-H3-Multishot>

@@ -68,6 +68,20 @@ What you actually trade:
 Rule of thumb: **ref2va when identity or voice must persist, fl2va when a shot
 must start exactly where the last one ended.**
 
+## Automatic safeguards (no dials)
+
+Two protections run on their own; you only ever see their log lines.
+
+* **Leftover-VRAM sweep.** If a previous run died without cleaning up, the
+  next render used to plan its memory against stale numbers and crawl at
+  high utilisation but low wattage. The planner now unloads leftovers and
+  re-measures before accepting a tight fit. Log line:
+  `cleared N GB of leftovers before reserve planning`.
+* **Master-assembly watchdog.** The final video assembly streams frames
+  between two ffmpeg processes; if no bytes move for 3 minutes the pair is
+  killed and the run fails loudly with the per-shot temp files kept, instead
+  of freezing the queue.
+
 ## Drift on long chains, and the dials that fight it
 
 Chained shots accrete detail. Each one conditions on the previous shot's own
