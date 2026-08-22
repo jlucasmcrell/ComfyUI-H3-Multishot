@@ -5170,6 +5170,30 @@ class H3MultishotMemorySampler:
                 except Exception as _rp_e:
                     print("[H3Memory] refresh_pin FAILED (%s) - raw pin "
                           "kept for this join" % _rp_e, flush=True)
+                # free the encode's working set NOW. The full-res float
+                # tails plus the encoder pass's cached blocks otherwise sit
+                # in the pool and push the next shot's DiT plan into
+                # streaming (13 min/shot vs 5.5, measured 2026-08-22).
+                # DiT stays loaded - only dead locals and allocator cache go.
+                try:
+                    del _gy, _k4, _bt, _lowp, _lvl, _ptail
+                except NameError:
+                    pass
+                try:
+                    del _z_new, _vnew
+                except NameError:
+                    pass
+                try:
+                    import comfy.model_management as _mm_rp
+                    _dev_rp = _mm_rp.get_torch_device()
+                    _b4_rp = _mm_rp.get_free_memory(_dev_rp) / (1024 ** 3)
+                    _mm_rp.soft_empty_cache()
+                    _af_rp = _mm_rp.get_free_memory(_dev_rp) / (1024 ** 3)
+                    print("[H3Memory] refresh_pin: encode working set freed "
+                          "(%.1f -> %.1f GB free)" % (_b4_rp, _af_rp),
+                          flush=True)
+                except Exception:
+                    pass
             aud = vae_decode_audio(audio_vae, out)
             sr = aud["sample_rate"]
             wav = aud["waveform"]
