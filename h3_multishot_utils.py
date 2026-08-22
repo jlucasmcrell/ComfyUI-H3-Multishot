@@ -5122,6 +5122,19 @@ class H3MultishotMemorySampler:
                            - _gy[:, 2:, 1:-1] - _gy[:, 1:-1, :-2]
                            - _gy[:, 1:-1, 2:])
                     _lap_raw = float(_k4.pow(2).mean())
+                    print("[H3Memory] refresh_pin probe: si=%d cg_ref=%r "
+                          "lap_raw=%.6f" % (si, _cg_ref, _lap_raw), flush=True)
+                    if si == 0 and not _cg_ref and _lap_raw > 1e-12:
+                        # THE MEMORY SAMPLER NEVER SET _cg_ref (2026-08-22):
+                        # initialized None at the top of run() and assigned
+                        # nowhere, so flatten_pin's pixel leg (and this
+                        # block's leveling) compared against nothing and
+                        # stayed dormant. Set the house level from shot 1's
+                        # decoded tail, exactly as the classic sampler does.
+                        _cg_ref = _lap_raw
+                        print("[H3Memory] house texture ref set from shot 1 "
+                              "tail: %.2f (memory sampler had never set it)"
+                              % _cg_ref, flush=True)
                     if si > 0 and _cg_ref and _lap_raw > 1e-12:
                         _r_amp = (_lap_raw / float(_cg_ref)) ** 0.5
                         if _r_amp > 1.0:
