@@ -4122,6 +4122,7 @@ class H3MultishotMemorySampler:
         _cp_prev = None   # context_pin: previous shot's full AV latent
         _rp_gain = 1.15   # refresh_pin: running per-hop gain estimate (seed =
                           # the measured 1.13-1.15x hop of 2026-08-17)
+        _rp_ref = None    # refresh_pin: house texture in THIS block's units
         _pin_sig0 = None  # first pin's sigma - the renorm anchor
         _pin_hf0 = None   # first pin's fine-detail energy - the flatten_pin anchor
         _cg_last_raw = None  # previous shot's raw tail texture (pixel domain)
@@ -5122,28 +5123,22 @@ class H3MultishotMemorySampler:
                            - _gy[:, 2:, 1:-1] - _gy[:, 1:-1, :-2]
                            - _gy[:, 1:-1, 2:])
                     _lap_raw = float(_k4.pow(2).mean())
-                    print("[H3Memory] refresh_pin probe: si=%d cg_ref=%r "
-                          "lap_raw=%.6f" % (si, _cg_ref, _lap_raw), flush=True)
-                    if si == 0 and not _cg_ref and _lap_raw > 1e-12:
-                        # THE MEMORY SAMPLER NEVER SET _cg_ref (2026-08-22):
-                        # initialized None at the top of run() and assigned
-                        # nowhere, so flatten_pin's pixel leg (and this
-                        # block's leveling) compared against nothing and
-                        # stayed dormant. Set the house level from shot 1's
-                        # decoded tail, exactly as the classic sampler does.
-                        _cg_ref = _lap_raw
-                        print("[H3Memory] house texture ref set from shot 1 "
-                              "tail: %.2f (memory sampler had never set it)"
-                              % _cg_ref, flush=True)
-                    if si > 0 and _cg_ref and _lap_raw > 1e-12:
-                        _r_amp = (_lap_raw / float(_cg_ref)) ** 0.5
+                    # OWN reference in OWN units. The sampler's _cg_ref is
+                    # a different metric (its 0.042 vs 0.0015 here for the
+                    # same tail, measured 2026-08-22) - comparing against it
+                    # clamped every gain to 1.0 and the leveling ran dormant.
+                    if si == 0 and _lap_raw > 1e-12:
+                        _rp_ref = _lap_raw
+                        print("[H3Memory] refresh_pin: house ref %.6f "
+                              "(shot 1 tail, own units)" % _rp_ref, flush=True)
+                    if si > 0 and _rp_ref and _lap_raw > 1e-12:
+                        _r_amp = (_lap_raw / float(_rp_ref)) ** 0.5
                         if _r_amp > 1.0:
                             _rp_gain = 0.5 * _rp_gain + 0.5 * _r_amp
-                        _gp = min(1.0, max(0.4, (float(_cg_ref) / _lap_raw)
+                        _gp = min(1.0, max(0.4, (float(_rp_ref) / _lap_raw)
                                            ** 0.5 / _rp_gain))
                     else:
-                        _gp = 1.0 if not _cg_ref else min(1.0, max(
-                            0.4, 1.0 / _rp_gain))
+                        _gp = min(1.0, max(0.4, 1.0 / _rp_gain))
                     _bt = _ptail.movedim(-1, 1)
                     _lowp = _F_rp.avg_pool2d(_bt, 5, stride=1, padding=2,
                                              count_include_pad=False)
