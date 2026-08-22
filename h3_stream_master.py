@@ -238,40 +238,82 @@ class ShotStreamWriter:
                "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "320k",
                "-shortest", master_path]
         enc = subprocess.Popen(cmd, stdin=subprocess.PIPE)
+        # No-progress watchdog. This pump wedged in the field (2026-08-22,
+        # master_00030): python parked in a pipe read, decoder stalled
+        # mid-shot, encoder starved at 0% CPU for 15+ minutes, and the whole
+        # prompt queue sat behind it. A single-threaded read->transform->write
+        # loop across two pipes has no way out of that state on its own, so a
+        # sidecar thread kills both processes if no bytes move for 180 s and
+        # the loop then raises with the temps kept.
+        import threading
+        import time as _wt
+        _wd = {"t": _wt.time(), "procs": [enc], "stop": False, "fired": False}
+
+        def _watchdog():
+            while not _wd["stop"]:
+                if _wt.time() - _wd["t"] > 180:
+                    _wd["fired"] = True
+                    for _p in list(_wd["procs"]):
+                        try:
+                            _p.kill()
+                        except Exception:
+                            pass
+                    return
+                _wt.sleep(5)
+
+        threading.Thread(target=_watchdog, daemon=True,
+                         name="h3-master-watchdog").start()
         off = 0
-        for s in self.shots:
-            dec = subprocess.Popen(
-                [_ffmpeg(), "-v", "error", "-i", s["path"],
-                 "-f", "rawvideo", "-pix_fmt", "rgb24", "-"],
-                stdout=subprocess.PIPE)
-            frame_bytes = s["w"] * s["h"] * 3
-            fi = 0
-            while True:
-                buf = dec.stdout.read(frame_bytes * 16)
-                if not buf:
-                    break
-                nfr = len(buf) // frame_bytes
-                x = torch.frombuffer(bytearray(buf), dtype=torch.uint8)
-                x = x.reshape(nfr, s["h"], s["w"], 3).float() / 255.0
-                if gains is not None:
-                    s_ = slice(off + fi, off + fi + nfr)
-                    g = lg_all[s_].view(-1, 1, 1, 1)
-                    if cg_all is not None:
-                        # the ORIGINAL formula: contrast about the frame's own
-                        # pre-normalize mean, luma gain applied to the mean
-                        # only - never to the deviations.
-                        c = cg_all[s_].view(-1, 1, 1, 1)
-                        m = luma_all[s_].view(-1, 1, 1, 1)
-                        x = (x - m) * c + m * g
-                    else:
-                        x = x * g
-                enc.stdin.write((x.clamp(0, 1) * 255).round()
-                                .to(torch.uint8).numpy().tobytes())
-                fi += nfr
-            dec.wait()
-            off += s["frames"]
-        enc.stdin.close()
-        if enc.wait() != 0:
+        try:
+            for s in self.shots:
+                dec = subprocess.Popen(
+                    [_ffmpeg(), "-v", "error", "-i", s["path"],
+                     "-f", "rawvideo", "-pix_fmt", "rgb24", "-"],
+                    stdout=subprocess.PIPE)
+                _wd["procs"] = [enc, dec]
+                frame_bytes = s["w"] * s["h"] * 3
+                fi = 0
+                while True:
+                    buf = dec.stdout.read(frame_bytes * 16)
+                    _wd["t"] = _wt.time()
+                    if not buf:
+                        break
+                    nfr = len(buf) // frame_bytes
+                    x = torch.frombuffer(bytearray(buf), dtype=torch.uint8)
+                    x = x.reshape(nfr, s["h"], s["w"], 3).float() / 255.0
+                    if gains is not None:
+                        s_ = slice(off + fi, off + fi + nfr)
+                        g = lg_all[s_].view(-1, 1, 1, 1)
+                        if cg_all is not None:
+                            # the ORIGINAL formula: contrast about the frame's own
+                            # pre-normalize mean, luma gain applied to the mean
+                            # only - never to the deviations.
+                            c = cg_all[s_].view(-1, 1, 1, 1)
+                            m = luma_all[s_].view(-1, 1, 1, 1)
+                            x = (x - m) * c + m * g
+                        else:
+                            x = x * g
+                    enc.stdin.write((x.clamp(0, 1) * 255).round()
+                                    .to(torch.uint8).numpy().tobytes())
+                    _wd["t"] = _wt.time()
+                    fi += nfr
+                if dec.wait() != 0 and not _wd["fired"]:
+                    raise RuntimeError(
+                        "master decode failed on %s (rc=%s) - shot temps "
+                        "kept in %s" % (s["path"], dec.returncode, self.dir))
+                off += s["frames"]
+            enc.stdin.close()
+            rc = enc.wait()
+        except (BrokenPipeError, OSError):
+            rc = -1
+        finally:
+            _wd["stop"] = True
+        if _wd["fired"]:
+            raise RuntimeError(
+                "master assembly stalled (no bytes moved for 180 s) - "
+                "decoder and encoder killed, shot temps kept in %s. "
+                "Re-run the master or assemble from the temps." % self.dir)
+        if rc != 0:
             raise RuntimeError("master encode failed - shot temps kept in %s"
                                % self.dir)
         # Container tags (same keys SaveVideo writes) so the master itself
