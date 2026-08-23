@@ -4122,6 +4122,11 @@ class H3MultishotMemorySampler:
         _cp_prev = None   # context_pin: previous shot's full AV latent
         _rp_gain = 1.15   # refresh_pin: running per-hop gain estimate (seed =
                           # the measured 1.13-1.15x hop of 2026-08-17)
+        _rp_div_last = 1.0  # refresh_pin: divisor actually applied to the
+                            # LAST pin - v5.1: the EMA must track the model's
+                            # RAW gain (measured x divisor), not the residual
+                            # (A/B 2026-08-23: raw gain is stable at ~1.16
+                            # while the residual-chasing EMA under-dosed)
         _rp_ref = None    # refresh_pin: house texture in THIS block's units
         _pin_sig0 = None  # first pin's sigma - the renorm anchor
         _pin_hf0 = None   # first pin's fine-detail energy - the flatten_pin anchor
@@ -5131,14 +5136,16 @@ class H3MultishotMemorySampler:
                               flush=True)
                     if si > 0 and _rp_ref and _lap_now > 1e-12:
                         _g_meas = _lap_now / float(_rp_ref)
-                        if _g_meas > 1.0:
-                            _rp_gain = 0.5 * _rp_gain + 0.5 * _g_meas
+                        _g_raw = _g_meas * _rp_div_last
+                        if _g_raw > 1.0:
+                            _rp_gain = 0.5 * _rp_gain + 0.5 * _g_raw
                         print("[H3Memory] refresh_pin: hop gain measured "
-                              "%.3f (EMA %.3f)" % (_g_meas, _rp_gain),
-                              flush=True)
+                              "%.3f (raw %.3f, EMA %.3f)"
+                              % (_g_meas, _g_raw, _rp_gain), flush=True)
                     _lvl, _sig_rp = _cg_flatten(
                         _ptail, float(_rp_ref) / _rp_gain if _rp_ref
                         else 0.0)
+                    _rp_div_last = _rp_gain
                     _lvl = _lvl.clamp(0, 1)
                     _z_new = video_vae.encode(_lvl)
                     if _z_new.ndim == 4:
