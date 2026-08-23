@@ -1028,7 +1028,12 @@ def _install_auto_reserve(patcher, model_name):
                     _total_t = _cm.get_total_memory(_dev)
                 except Exception:
                     _total_t = _free
-                _bump = max(0, int(_total_t * 0.09) - _AUTO_KEEPOUT)
+                # No keepout credit: comfy fills weights to free-reserve no
+                # matter what, so crediting keepout under-raised the reserve
+                # by ~1 GB and left the peak in the WDDM zone (767 s/it,
+                # Zara run 2026-08-23). Full bump; 1 GB extra streaming is
+                # the measured-cheap side.
+                _bump = int(_total_t * 0.09)
                 if _bump:
                     reserve += _bump
                     how += (" | +driver headroom (tight) +%.1f GB"
@@ -1106,7 +1111,7 @@ def _install_auto_reserve(patcher, model_name):
                         _tt = _mmt.get_total_memory(_mmt.get_torch_device())
                     except Exception:
                         _tt = _free
-                    _full_bump = max(0, int(_tt * 0.09) - _AUTO_KEEPOUT)
+                    _full_bump = int(_tt * 0.09)  # no keepout credit (2026-08-23)
                     _clamp_res = max(_cap, _AUTO_MIN_POOL)
                     _bare = int(_known_need) if _known_need else int(reserve / 1.25)
                     if _clamp_res - _bare < _full_bump:
@@ -1190,7 +1195,11 @@ def _install_auto_reserve(patcher, model_name):
                     _total = _free
                 _wddm = int(_total * 0.09)
                 _pool_real = int(_known_need) if _known_need else reserve
-                _target = _pool_real + max(0, _wddm - _AUTO_KEEPOUT)
+                # Full wddm on top of the pool - no keepout credit (see the
+                # tight-path note; the 2026-08-23 767 s/it crawl planned
+                # reserve = pool + wddm - keepout and peaked 1.1 GB into
+                # the zone this exists to keep clear).
+                _target = _pool_real + _wddm
                 if (_w + _pool_real + _AUTO_KEEPOUT + _wddm > _free
                         and reserve < _target):
                     _target = min(_target,
