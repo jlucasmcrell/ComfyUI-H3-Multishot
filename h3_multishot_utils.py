@@ -4242,6 +4242,7 @@ class H3MultishotMemorySampler:
                             # (A/B 2026-08-23: raw gain is stable at ~1.16
                             # while the residual-chasing EMA under-dosed)
         _at_house = None  # audio_tone_control: shot 1's long-term spectrum
+        _rp_off = None    # refresh_pin: measured splice alignment offset
         def _h3lat_fn(_v, _s, _m):
             # resolve the LatentUpscaler pack's util through its
             # registered node class (survives the dashed folder name)
@@ -5411,7 +5412,7 @@ class H3MultishotMemorySampler:
                     # pixel tail long enough to encode >= _pf_rp latent frames
                     _tratio = max(1.0, imgs.shape[0] / float(_vlat.shape[2]))
                     _npix = min(imgs.shape[0],
-                                int(_pf_rp * _tratio) + int(_tratio) + 4)
+                                int(_pf_rp * _tratio) + int(_tratio) * 3 + 4)
                     _ptail = imgs[-_npix:].detach().float()
                     if _h3lat_scale:
                         import torch.nn.functional as _F_bs
@@ -5491,9 +5492,39 @@ class H3MultishotMemorySampler:
                     if _z_new.shape[2] >= _pf_rp:
                         _sig_raw_rp = float(
                             _vlat[:, :, -_pf_rp:].float().std())
+                        # SPLICE ALIGNMENT (finetooth 2026-08-23): the VAE's
+                        # start-anchored temporal packing can leave the
+                        # re-encoded clip's last latent frames ~1-2 frames
+                        # EARLY vs the true tail (~0.3 s) - joins then read
+                        # as cuts and the audio slips. Find the shift by
+                        # correlating candidate slices against the RAW tail
+                        # latents (leveling attenuates amplitude, not
+                        # structure, so the correlation peak marks the true
+                        # alignment). Measured once per run.
+                        if _rp_off is None:
+                            _raw_t = _vlat[:, :, -_pf_rp:].float()
+                            _rb = ((_raw_t - _raw_t.mean())
+                                   / (_raw_t.std() + 1e-6))
+                            _best_c, _rp_off = None, 0
+                            _kmax = min(3, int(_z_new.shape[2]) - _pf_rp)
+                            for _k in range(0, _kmax + 1):
+                                _end = -_k if _k else None
+                                _cand = _z_new[
+                                    :, :, -(_pf_rp + _k):_end].float().to(
+                                    _raw_t.device)
+                                _ca = ((_cand - _cand.mean())
+                                       / (_cand.std() + 1e-6))
+                                _c = float((_ca * _rb).mean())
+                                if _best_c is None or _c > _best_c:
+                                    _best_c, _rp_off = _c, _k
+                            print("[H3Memory] refresh_pin: splice alignment "
+                                  "offset %d latent frame(s) (corr %.4f)"
+                                  % (_rp_off, _best_c or 0.0), flush=True)
+                        _end_rp = -_rp_off if _rp_off else None
                         _vnew = _vlat.clone()
                         _vnew[:, :, -_pf_rp:] = _z_new[
-                            :, :, -_pf_rp:].to(_vnew.dtype).to(_vnew.device)
+                            :, :, -(_pf_rp + _rp_off):_end_rp].to(
+                            _vnew.dtype).to(_vnew.device)
                         if (refresh_renoise
                                 and chain_gain_control == "refresh_pin"):
                             # variance-match the splice to the RAW pin
