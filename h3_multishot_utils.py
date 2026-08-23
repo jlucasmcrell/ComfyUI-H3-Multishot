@@ -3613,7 +3613,7 @@ class H3MultishotMemorySampler:
                            "trim, so consecutive files overlap by ~1s; the "
                            "master is still the clean join. Costs one file "
                            "write per shot."}),
-            "upscale_model_name": (["(none)"] + _up_model_list(), {
+            "upscale_model_name": (["(none)", "(H3 latent x2)", "(H3 latent x1.5)"] + _up_model_list(), {
                 "default": "(none)",
                 "tooltip": "Pick an upscale model by name instead of wiring a "
                            "loader node. Synthesises detail rather than "
@@ -3791,6 +3791,38 @@ class H3MultishotMemorySampler:
                            "the source, before it ever enters the pin. Too "
                            "high reads as waxy shimmer; start at 0.02-0.05. "
                            "0 = off."}),
+            "refresh_renoise": ("BOOLEAN", {
+                "default": False, "label_on": "variance-match the splice",
+                "label_off": "off",
+                "tooltip": "refresh_pin only: after the levelled tail is "
+                           "re-encoded, add seeded noise to restore the "
+                           "splice to the RAW pin's variance, so the model "
+                           "reads it as native latents instead of a "
+                           "distribution step (2026-08-23 consult: 'the one "
+                           "change that would have fixed v4's visible "
+                           "cuts')."}),
+            "pin_noise_ramp": ("BOOLEAN", {
+                "default": False, "label_on": "graded seam floor",
+                "label_off": "uniform",
+                "tooltip": "EXPERIMENTAL: apply pin_noise as a temporal ramp "
+                           "- up to 2x dose at the DEEP end of the pin, "
+                           "fading to ZERO on the last 4 frames touching the "
+                           "continuation. The model re-imagines the deep "
+                           "context (absorbing texture drift) while the "
+                           "boundary stays bit-exact (no seam). The honest "
+                           "stand-in for mask-floor re-denoise, which this "
+                           "conditioning-row pin architecture cannot do."}),
+            "auto_chunk_ffn": ("BOOLEAN", {
+                "default": False, "label_on": "auto-chunk when tight",
+                "label_off": "off",
+                "tooltip": "When free VRAM minus model weights is under 10 "
+                           "GB, apply the sol-attn chunked-FFN patch "
+                           "automatically (chunks=2) so the weights stay "
+                           "resident instead of streaming. Needs "
+                           "ComfyUI-sol-attn installed. If the Studio "
+                           "Switches chunk gate is ALSO on, the FFN gets "
+                           "chunked twice - harmless numerically, slight "
+                           "extra overhead."}),
         },
             # hidden inputs are not widgets, so saved workflows are unaffected
             "hidden": {"prompt": "PROMPT", "extra_pnginfo": "EXTRA_PNGINFO"}}
@@ -3863,7 +3895,8 @@ class H3MultishotMemorySampler:
             reference_video=None, reference_video_audio=None,
             low_ram_master=False, audio_pin_frames=0,
             pin_noise_audio=False, audio_tone_control=False,
-            x0_texture_clamp=0.0,
+            x0_texture_clamp=0.0, refresh_renoise=False,
+            pin_noise_ramp=False, auto_chunk_ffn=False,
             prompt=None, extra_pnginfo=None):
         # Keep the hidden PROMPT before anything can shadow it: the shot loop
         # rebinds `prompt` to this shot's conditioning TEXT, so by finalize()
@@ -4088,7 +4121,19 @@ class H3MultishotMemorySampler:
 
         _lat_v_parts, _lat_a_parts = [], []   # issue #12: raw per-shot latents
         upscale_model = None
-        if upscale_model_name not in ("(none)", "", None):
+        _h3lat_scale = {"(H3 latent x2)": 2.0, "(H3 latent x1.5)": 1.5}.get(
+            str(upscale_model_name), 0.0)
+        if _h3lat_scale:
+            print("[H3Memory] upscale: H3 LATENT x%.1f - each shot's "
+                  "latent is spatially upscaled and decoded at size; "
+                  "no pixel SR model, native VAE detail."
+                  % _h3lat_scale, flush=True)
+            if output_scale:
+                output_scale = max(1.0,
+                                   float(output_scale) / _h3lat_scale)
+        if upscale_model_name not in ("(none)", "", None,
+                                      "(H3 latent x2)",
+                                      "(H3 latent x1.5)"):
             # load it NOW, before a single step is sampled. The first version
             # of this loader raised inside the per-shot upscale, i.e. AFTER
             # shot 1 had rendered - six minutes of GPU burned to reach a
@@ -4197,6 +4242,23 @@ class H3MultishotMemorySampler:
                             # (A/B 2026-08-23: raw gain is stable at ~1.16
                             # while the residual-chasing EMA under-dosed)
         _at_house = None  # audio_tone_control: shot 1's long-term spectrum
+        def _h3lat_fn(_v, _s, _m):
+            # resolve the LatentUpscaler pack's util through its
+            # registered node class (survives the dashed folder name)
+            import sys as _sy
+            import nodes as _nd
+            _c = _nd.NODE_CLASS_MAPPINGS.get(
+                "MiniMaxH3LatentUpscaleCombined")
+            if _c is None:
+                raise RuntimeError(
+                    "ComfyUI-MiniMaxH3_LatentUpscaler not installed")
+            _m2 = _sy.modules[_c.__module__]
+            _fn = getattr(_m2, "upscale_video_latent", None)
+            if _fn is None:
+                _pkg = _c.__module__.rsplit(".", 1)[0]
+                _fn = getattr(_sy.modules.get(_pkg + ".utils"),
+                              "upscale_video_latent")
+            return _fn(_v, _s, _m)
         _cond_cache = {}  # TE batch: pre-encoded conds for shots 3+
         if continuity == "context_pin":
             # FAIL FAST on the Motion-Context layout-patch conflict (issue
@@ -4265,6 +4327,32 @@ class H3MultishotMemorySampler:
             print("[H3Memory] x0 texture clamp ACTIVE: high band x%.3f on "
                   "the last 30%% of steps (video half only)"
                   % (1.0 - _xc_t), flush=True)
+        if auto_chunk_ffn:
+            # true auto-chunk (2026-08-23): if the weights would crowd
+            # the card, apply sol-attn's chunked-FFN patch ourselves
+            # instead of letting the planner choose weight-streaming.
+            try:
+                import comfy.model_management as _mm_ac
+                import nodes as _nd_ac
+                _dev_ac = _mm_ac.get_torch_device()
+                _free_ac = _mm_ac.get_free_memory(_dev_ac)
+                _w_ac = int(model.model_size())
+                if _free_ac - _w_ac < 10 * 1024 ** 3:
+                    _cf = _nd_ac.NODE_CLASS_MAPPINGS.get(
+                        "MiniMaxH3ChunkFeedForward")
+                    if _cf is None:
+                        print("[H3Memory] auto_chunk_ffn: ComfyUI-sol-attn "
+                              "not installed - cannot chunk.", flush=True)
+                    else:
+                        model = _cf().patch(model, True, 2, 8192)[0]
+                        print("[H3Memory] auto_chunk_ffn ACTIVE: weights "
+                              "%.1f GB vs %.1f GB free - FFN chunked x2 "
+                              "so the weights stay resident."
+                              % (_w_ac / 2 ** 30, _free_ac / 2 ** 30),
+                              flush=True)
+            except Exception as _ac_e:
+                print("[H3Memory] auto_chunk_ffn skipped (%s)" % _ac_e,
+                      flush=True)
         _rp_ref = None    # refresh_pin: house texture in THIS block's units
         _pin_sig0 = None  # first pin's sigma - the renorm anchor
         _pin_hf0 = None   # first pin's fine-detail energy - the flatten_pin anchor
@@ -4882,6 +4970,22 @@ class H3MultishotMemorySampler:
                         _sig.append(float(_s))
                         _n = torch.randn(_z.shape, generator=_g,
                                          device=_z.device, dtype=torch.float32)
+                        if (pin_noise_ramp and _z.ndim == 5
+                                and _z.shape[2] > 4):
+                            # graded seam floor (consult 2026-08-23): up
+                            # to 2x dose at the DEEP end, zero on the 4
+                            # frames touching the continuation - the
+                            # model re-imagines old context, the seam
+                            # stays bit-exact.
+                            _wv = torch.linspace(
+                                2.0, 0.0, steps=_z.shape[2],
+                                device=_z.device)
+                            _wv[-4:] = 0.0
+                            _tv = (_t * _wv).clamp(0.0, 0.5).view(
+                                1, 1, -1, 1, 1)
+                            _o = ((1.0 - _tv * _tv) ** 0.5) * _z.float() \
+                                + _tv * _s * _n
+                            return _o.to(_z.dtype)
                         _out = ((1.0 - _t * _t) ** 0.5) * _z.float() \
                             + _t * _s * _n
                         return _out.to(_z.dtype)
@@ -5269,7 +5373,18 @@ class H3MultishotMemorySampler:
                 _ho_v = lat[:, :, -_HO_ROWS:].detach().clone()
                 _ho_a = (_a_lat[..., -_HO_ACOLS:].detach().clone()
                          if _a_lat is not None and audio_lock else None)
-            imgs = video_vae.decode(lat)
+            if _h3lat_scale:
+                try:
+                    _lat_up = _h3lat_fn(lat.float(), _h3lat_scale,
+                                        "bicubic").to(lat.dtype)
+                    imgs = video_vae.decode(_lat_up)
+                    del _lat_up
+                except Exception as _lu_e:
+                    print("[H3Memory] H3 latent upscale FAILED (%s) - "
+                          "base-res decode kept" % _lu_e, flush=True)
+                    imgs = video_vae.decode(lat)
+            else:
+                imgs = video_vae.decode(lat)
             if imgs.ndim == 5:
                 imgs = imgs.reshape(-1, imgs.shape[-3], imgs.shape[-2],
                                     imgs.shape[-1])
@@ -5298,6 +5413,14 @@ class H3MultishotMemorySampler:
                     _npix = min(imgs.shape[0],
                                 int(_pf_rp * _tratio) + int(_tratio) + 4)
                     _ptail = imgs[-_npix:].detach().float()
+                    if _h3lat_scale:
+                        import torch.nn.functional as _F_bs
+                        _bh = int(round(_ptail.shape[1] / _h3lat_scale))
+                        _bw = int(round(_ptail.shape[2] / _h3lat_scale))
+                        _ptail = _F_bs.interpolate(
+                            _ptail.movedim(-1, 1), size=(_bh, _bw),
+                            mode="bilinear", align_corners=False
+                        ).movedim(1, -1)
                     # v5 = the proposal as written: measure AND level in the
                     # pack's own calibrated units (_cg_lap_var over the same
                     # 24-frame window the chain flatten uses), target
@@ -5366,9 +5489,36 @@ class H3MultishotMemorySampler:
                     if _z_new.ndim == 4:
                         _z_new = _z_new.unsqueeze(0)
                     if _z_new.shape[2] >= _pf_rp:
+                        _sig_raw_rp = float(
+                            _vlat[:, :, -_pf_rp:].float().std())
                         _vnew = _vlat.clone()
                         _vnew[:, :, -_pf_rp:] = _z_new[
                             :, :, -_pf_rp:].to(_vnew.dtype).to(_vnew.device)
+                        if (refresh_renoise
+                                and chain_gain_control == "refresh_pin"):
+                            # variance-match the splice to the RAW pin
+                            # (consult 2026-08-23): encoder latents are
+                            # statistically cleaner than generation-state
+                            # latents and the model reads the step as a
+                            # cut. Seeded for A/B reproducibility.
+                            _tl = _vnew[:, :, -_pf_rp:].float()
+                            _sig_enc = float(_tl.std())
+                            if _sig_raw_rp > _sig_enc * 1.01:
+                                _gadd = (_sig_raw_rp ** 2
+                                         - _sig_enc ** 2) ** 0.5
+                                _gen_rn = _tt_rp.Generator(
+                                    device=_tl.device).manual_seed(
+                                    int(seed) ^ (si * 7919) ^ 0x5157)
+                                _tl = _tl + _gadd * _tt_rp.randn(
+                                    _tl.shape, generator=_gen_rn,
+                                    device=_tl.device,
+                                    dtype=_tt_rp.float32)
+                                _vnew[:, :, -_pf_rp:] = _tl.to(_vnew.dtype)
+                                print("[H3Memory] refresh_pin: splice "
+                                      "variance-matched to raw pin "
+                                      "(%.4f -> %.4f, +noise %.4f)"
+                                      % (_sig_enc, _sig_raw_rp, _gadd),
+                                      flush=True)
                         if _nested_rp:
                             import comfy.nested_tensor as _nt_rp
                             _cc_rp = list(_zr.unbind())
