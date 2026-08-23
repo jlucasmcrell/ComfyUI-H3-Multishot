@@ -1449,13 +1449,16 @@ class H3ModelLoaderAny:
         return {"required": {"model_name": (names, {
             "tooltip": "safetensors or GGUF - loader routes automatically."})},
             "optional": {"activation_reserve_gb": ("FLOAT", {
-                "default": 0.0, "min": 0.0, "max": 128.0, "step": 0.5,
+                "default": 0.0, "min": -1.0, "max": 128.0, "step": 0.5,
                 "tooltip": "0 = AUTO (recommended). The pack sizes the "
                 "activation reserve for the actual render shape, measures the "
                 "real peak each run, and tightens itself per machine - lower "
                 "resolutions get faster automatically. Set a number only to "
                 "pin the reserve by hand; that number is for ONE resolution "
-                "and the wrong number is 5-10x slower, not a little slower."})}}
+                "and the wrong number is 5-10x slower, not a little slower. "
+                "-1 = OFF: leave ComfyUI's stock estimator alone (issue #17; "
+                "for cards/setups where the auto-reserve mis-plans - you "
+                "lose the leftover sweep and per-shape learning)."})}}
 
     RETURN_TYPES = ("MODEL",)
     FUNCTION = "load"
@@ -1547,7 +1550,11 @@ class H3ModelLoaderAny:
             patcher.model.h3_checkpoint_name = str(model_name)
         except Exception:
             pass
-        if activation_reserve_gb and activation_reserve_gb > 0:
+        if activation_reserve_gb is not None and activation_reserve_gb < 0:
+            print("[H3ModelLoader] activation reserve OFF (-1): ComfyUI's "
+                  "stock estimator is in charge. No leftover sweep, no "
+                  "per-shape learning (issue #17 escape hatch).", flush=True)
+        elif activation_reserve_gb and activation_reserve_gb > 0:
             _cap = int(activation_reserve_gb * (1024 ** 3))
             # Must live on the inner BaseModel, not the ModelPatcher: LoRA
             # stacks and guiders clone() the patcher before sampling and an
@@ -6244,6 +6251,30 @@ class H3InfiniteTakeSampler:
         # measurements. One fixed answer for every shape query, restored
         # after sampling.
         _res_bytes = int(float(activation_reserve_gb) * (1024 ** 3))
+        if abs(float(activation_reserve_gb) - 8.0) < 1e-6:
+            # Untouched default: 8 GB was calibrated for 768x1344/243f and
+            # silently starves bigger windows (issue #17: 896x1184/328f on a
+            # 16 GB card). Scale from the window's actual latent cells with
+            # the linear fit measured on the 5090 (2026-08-23):
+            # pool ~ 4.4 GB + 1.07 GB per Mcell. A hand-set value is honored
+            # verbatim.
+            try:
+                _z_we = latent["samples"]
+                _zv_we = (_z_we.unbind()[0]
+                          if getattr(_z_we, "is_nested", False) else _z_we)
+                _mc_we = 1.0
+                for _d_we in list(_zv_we.shape)[1:]:
+                    _mc_we *= float(_d_we)
+                _mc_we /= 1e6
+                _est_we = (4.4 + 1.07 * _mc_we) * (1024 ** 3)
+                _res_bytes = int(max(4.0 * 1024 ** 3,
+                                     min(18.0 * 1024 ** 3, _est_we)))
+                print("[H3Infinite] window reserve auto-scaled from the "
+                      "default: %.1f GB for %.2f Mcells (set the widget to "
+                      "any non-8.0 value to pin it)"
+                      % (_res_bytes / 2 ** 30, _mc_we), flush=True)
+            except Exception:
+                pass
         _orig_memreq = getattr(model.model, "memory_required", None)
 
         def _win_reserve(input_shape, *a, **k):
