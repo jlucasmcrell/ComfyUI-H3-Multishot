@@ -5105,7 +5105,6 @@ class H3MultishotMemorySampler:
                 # back to the raw pin.
                 try:
                     import torch as _tt_rp
-                    import torch.nn.functional as _F_rp
                     _zr = out["samples"]
                     _nested_rp = getattr(_zr, "is_nested", False)
                     _vlat = _zr.unbind()[0] if _nested_rp else _zr
@@ -5116,34 +5115,31 @@ class H3MultishotMemorySampler:
                     _npix = min(imgs.shape[0],
                                 int(_pf_rp * _tratio) + int(_tratio) + 4)
                     _ptail = imgs[-_npix:].detach().float()
-                    # amplitude vs the house Laplacian reference (_cg_ref,
-                    # maintained by the frame-flatten path from shot 1)
-                    _gy = _ptail.mean(-1)
-                    _k4 = (_gy[:, 1:-1, 1:-1] * 4 - _gy[:, :-2, 1:-1]
-                           - _gy[:, 2:, 1:-1] - _gy[:, 1:-1, :-2]
-                           - _gy[:, 1:-1, 2:])
-                    _lap_raw = float(_k4.pow(2).mean())
-                    # OWN reference in OWN units. The sampler's _cg_ref is
-                    # a different metric (its 0.042 vs 0.0015 here for the
-                    # same tail, measured 2026-08-22) - comparing against it
-                    # clamped every gain to 1.0 and the leveling ran dormant.
-                    if si == 0 and _lap_raw > 1e-12:
-                        _rp_ref = _lap_raw
-                        print("[H3Memory] refresh_pin: house ref %.6f "
-                              "(shot 1 tail, own units)" % _rp_ref, flush=True)
-                    if si > 0 and _rp_ref and _lap_raw > 1e-12:
-                        _r_amp = (_lap_raw / float(_rp_ref)) ** 0.5
-                        if _r_amp > 1.0:
-                            _rp_gain = 0.5 * _rp_gain + 0.5 * _r_amp
-                        _gp = min(1.0, max(0.4, (float(_rp_ref) / _lap_raw)
-                                           ** 0.5 / _rp_gain))
-                    else:
-                        _gp = min(1.0, max(0.4, 1.0 / _rp_gain))
-                    _bt = _ptail.movedim(-1, 1)
-                    _lowp = _F_rp.avg_pool2d(_bt, 5, stride=1, padding=2,
-                                             count_include_pad=False)
-                    _lvl = (_lowp + _gp * (_bt - _lowp)).clamp(0, 1)
-                    _lvl = _lvl.movedim(1, -1)
+                    # v5 = the proposal as written: measure AND level in the
+                    # pack's own calibrated units (_cg_lap_var over the same
+                    # 24-frame window the chain flatten uses), target
+                    # house/g via _cg_flatten (blur-only, never sharpens).
+                    # v4's own-units band-gain miscalibrated the hop gains
+                    # and made every join visible (operator-called
+                    # 2026-08-23: obvious cuts + speech misalignment).
+                    _w_rp = min(24, imgs.shape[0])
+                    _lap_now = _cg_lap_var(imgs[-_w_rp:])
+                    if si == 0 and _lap_now > 1e-12:
+                        _rp_ref = _lap_now
+                        print("[H3Memory] refresh_pin: house ref %.5f "
+                              "(shot 1 tail, _cg_lap_var units)" % _rp_ref,
+                              flush=True)
+                    if si > 0 and _rp_ref and _lap_now > 1e-12:
+                        _g_meas = _lap_now / float(_rp_ref)
+                        if _g_meas > 1.0:
+                            _rp_gain = 0.5 * _rp_gain + 0.5 * _g_meas
+                        print("[H3Memory] refresh_pin: hop gain measured "
+                              "%.3f (EMA %.3f)" % (_g_meas, _rp_gain),
+                              flush=True)
+                    _lvl, _sig_rp = _cg_flatten(
+                        _ptail, float(_rp_ref) / _rp_gain if _rp_ref
+                        else 0.0)
+                    _lvl = _lvl.clamp(0, 1)
                     _z_new = video_vae.encode(_lvl)
                     if _z_new.ndim == 4:
                         _z_new = _z_new.unsqueeze(0)
@@ -5159,10 +5155,11 @@ class H3MultishotMemorySampler:
                                         _nt_rp.NestedTensor(_cc_rp)}
                         else:
                             _cp_prev = {"samples": _vnew}
-                        print("[H3Memory] refresh_pin: tail re-encoded from "
-                              "levelled pixels (band gain %.3f, hop gain est "
-                              "%.3f, %d latent frames spliced, audio raw)"
-                              % (_gp, _rp_gain, _pf_rp), flush=True)
+                        print("[H3Memory] refresh_pin: tail levelled to "
+                              "house/%.3f (flatten sigma %.2f) and "
+                              "re-encoded; %d latent frames spliced, "
+                              "audio raw" % (_rp_gain, _sig_rp, _pf_rp),
+                              flush=True)
                     else:
                         print("[H3Memory] refresh_pin: encode returned %d "
                               "latent frames < pin %d - raw pin kept"
@@ -5176,7 +5173,7 @@ class H3MultishotMemorySampler:
                 # streaming (13 min/shot vs 5.5, measured 2026-08-22).
                 # DiT stays loaded - only dead locals and allocator cache go.
                 try:
-                    del _gy, _k4, _bt, _lowp, _lvl, _ptail
+                    del _lvl, _ptail
                 except NameError:
                     pass
                 try:
