@@ -816,7 +816,20 @@ def _install_auto_reserve(patcher, model_name):
                 cells *= int(d)
         except Exception:
             cells = 0
-        key = _auto_key(model_name, cells)
+        # Fingerprint the patch set into the shape key: a chunked-FFN or
+        # sol-attn model has a different real pool than the same shape
+        # unpatched, and the largest-ever cache erased chunking's benefit
+        # (2026-08-23: chunk_ffn ON planned against the unchunked 9.8 GB
+        # measurement and streamed weights for nothing). Folded into the
+        # NAME segment so key.rsplit("|") structure is unchanged.
+        try:
+            _po_fp = getattr(patcher, "model_options", {}) or {}
+            _fp = "~fp%d.%d" % (
+                len(_po_fp.get("patches", {}) or {}),
+                len(_po_fp.get("transformer_options", {}) or {}))
+        except Exception:
+            _fp = ""
+        key = _auto_key(model_name + _fp, cells)
         _auto_last["key"] = key
         # comfy (and DynamicVRAM) call memory_required repeatedly - per load
         # AND per sampling step. The answer must be STABLE for a shape:
@@ -1077,6 +1090,10 @@ def _install_auto_reserve(patcher, model_name):
                           "spill on top of the offload."
                           % (_known_need / 2**30, _w / 2**30,
                              _free / 2**30, reserve / 2**30), flush=True)
+                    print("[H3AutoReserve] hint: if chunk_ffn is OFF in "
+                          "Studio Switches, turning it on roughly halves "
+                          "this pool and can keep every weight resident.",
+                          flush=True)
                     if _card_max < _known_need:
                         print("[H3AutoReserve] WARNING: even with zero weights "
                               "resident the card has %.1f GB for a %.1f GB "
@@ -3309,20 +3326,25 @@ class H3MultishotMemorySampler:
                            "shot 1 pinned, later shots always see where the "
                            "episode started. 0 = pure recency."}),
             "chain_gain_control": (["off", "flatten", "match_output",
-                                    "flatten_pin", "refresh_pin"], {
+                                    "flatten_pin", "refresh_pin",
+                                    "level_pin"], {
                 "default": "off",
                 "tooltip": "Texture levelling across the chain. flatten = "
                            "level the DECODED frames and the bank to shot 1 "
                            "(the pin still carries accreted texture; measured "
                            "x1.13-1.15 per hop at 736x1280 with flatten on). "
-                           "flatten_pin = EXPERIMENTAL: flatten PLUS level "
-                           "the pinned latents' fine-detail energy to shot "
-                           "1's before they are pinned. First A/Bs "
-                           "(2026-08-17) moved the ratchet only slightly; "
-                           "kept for testing, not a default. Long context_pin "
-                           "chains and extend takes past ~4 windows still "
-                           "sharpen visibly - keep takes short until the fix "
-                           "lands."}),
+                           "flatten_pin = flatten PLUS a latent high-pass "
+                           "trim on the pin; leaves ~x1.058/hop residue. "
+                           "refresh_pin = the pin's video tail is decoded, "
+                           "levelled to house/(learned hop gain) with the "
+                           "calibrated flatten, re-encoded and spliced; "
+                           "audio rides raw (A/B 2026-08-23: joins passed "
+                           "blind review, drift x1.043 vs flatten_pin's "
+                           "x1.105 over 2 joins). level_pin = EXPERIMENTAL: "
+                           "closed-loop LATENT leveling - measure decoded "
+                           "texture, tilt the raw pin latents' high band, "
+                           "re-decode to verify, iterate; no VAE re-encode, "
+                           "so the pin stays native latent statistics."}),
             "continuity": (["cut", "seamless", "seamless_tail",
                             "latent_handoff", "first_frame", "flf_chain",
                             "context_pin"], {
@@ -3733,6 +3755,35 @@ class H3MultishotMemorySampler:
                            "the JoyEcho ancestor of this sampler carried "
                            "between chunks; try it for continuous speech "
                            "across joins. Experimental."}),
+            "pin_noise_audio": ("BOOLEAN", {
+                "default": False, "label_on": "noise the audio pin too",
+                "label_off": "video pin only (measured-safe)",
+                "tooltip": "EXPERIMENTAL: apply pin_noise to the AUDIO half "
+                           "of the pin as well, keeping the joint AV latent "
+                           "statistics consistent (2026-08-23 model-consult "
+                           "hypothesis for speech misalignment at joins). "
+                           "Field measurement says audio noising dulls the "
+                           "voice - that is why this defaults OFF. Flip it "
+                           "only for an A/B."}),
+            "audio_tone_control": ("BOOLEAN", {
+                "default": False, "label_on": "EQ-match shots to shot 1",
+                "label_off": "off",
+                "tooltip": "The audio twin of chain flatten: chained audio "
+                           "drifts DULLER per hop (4-10 kHz fell 8-13%/hop "
+                           "even with the pinned slot, measured 2026-08-11). "
+                           "This EQ-matches every later shot's long-term "
+                           "spectrum to shot 1's - a constant linear filter "
+                           "per shot, clamped +/-9 dB, half-strength in the "
+                           "top band so it cannot manufacture hiss."}),
+            "x0_texture_clamp": ("FLOAT", {
+                "default": 0.0, "min": 0.0, "max": 0.15, "step": 0.005,
+                "tooltip": "EXPERIMENTAL: during the LAST 30% of sampling "
+                           "steps, attenuate the high band of the model's "
+                           "x0-prediction by this fraction (video half "
+                           "only). Attacks the per-hop texture overshoot at "
+                           "the source, before it ever enters the pin. Too "
+                           "high reads as waxy shimmer; start at 0.02-0.05. "
+                           "0 = off."}),
         },
             # hidden inputs are not widgets, so saved workflows are unaffected
             "hidden": {"prompt": "PROMPT", "extra_pnginfo": "EXTRA_PNGINFO"}}
@@ -3804,6 +3855,8 @@ class H3MultishotMemorySampler:
             pin_renorm=False, reference_subjects="",
             reference_video=None, reference_video_audio=None,
             low_ram_master=False, audio_pin_frames=0,
+            pin_noise_audio=False, audio_tone_control=False,
+            x0_texture_clamp=0.0,
             prompt=None, extra_pnginfo=None):
         # Keep the hidden PROMPT before anything can shadow it: the shot loop
         # rebinds `prompt` to this shot's conditioning TEXT, so by finalize()
@@ -4136,6 +4189,52 @@ class H3MultishotMemorySampler:
                             # RAW gain (measured x divisor), not the residual
                             # (A/B 2026-08-23: raw gain is stable at ~1.16
                             # while the residual-chasing EMA under-dosed)
+        _at_house = None  # audio_tone_control: shot 1's long-term spectrum
+        _cond_cache = {}  # TE batch: pre-encoded conds for shots 3+
+        if float(x0_texture_clamp or 0.0) > 0.0:
+            # Sampling-time texture clamp (consult 2026-08-23, kimi lever):
+            # attenuate the x0-prediction's spatial high band on the LAST
+            # ~30% of steps, video half only. Kills the per-hop overshoot
+            # at the source - nothing over-sharp ever enters pin or bank.
+            import torch.nn.functional as _F_xc
+            _xc_t = float(x0_texture_clamp)
+            model = model.clone()
+
+            def _x0_clamp_fn(args):
+                try:
+                    _sig_all = args.get("model_options", {}).get(
+                        "transformer_options", {}).get("sample_sigmas", None)
+                    _sg = args.get("sigma", None)
+                    _d = args["denoised"]
+                    if _sig_all is None or _sg is None:
+                        return _d
+                    _smax = float(_sig_all.max())
+                    _smin = float(_sig_all.min())
+                    _cur = float(_sg.max() if hasattr(_sg, "max") else _sg)
+                    if (_cur - _smin) / max(1e-6, _smax - _smin) > 0.30:
+                        return _d          # early steps: untouched
+                    _nested_xc = getattr(_d, "is_nested", False)
+                    _parts_xc = list(_d.unbind()) if _nested_xc else [_d]
+                    _v_xc = _parts_xc[0]
+                    if _v_xc.ndim != 5:
+                        return _d
+                    _low_xc = _F_xc.avg_pool3d(
+                        _v_xc.float(), (1, 3, 3), stride=1,
+                        padding=(0, 1, 1), count_include_pad=False)
+                    _vo = (_low_xc + (1.0 - _xc_t)
+                           * (_v_xc.float() - _low_xc)).to(_v_xc.dtype)
+                    if _nested_xc:
+                        import comfy.nested_tensor as _nt_xc
+                        _parts_xc[0] = _vo
+                        return _nt_xc.NestedTensor(_parts_xc)
+                    return _vo
+                except Exception:
+                    return args["denoised"]
+
+            model.set_model_sampler_post_cfg_function(_x0_clamp_fn)
+            print("[H3Memory] x0 texture clamp ACTIVE: high band x%.3f on "
+                  "the last 30%% of steps (video half only)"
+                  % (1.0 - _xc_t), flush=True)
         _rp_ref = None    # refresh_pin: house texture in THIS block's units
         _pin_sig0 = None  # first pin's sigma - the renorm anchor
         _pin_hf0 = None   # first pin's fine-detail energy - the flatten_pin anchor
@@ -4488,7 +4587,40 @@ class H3MultishotMemorySampler:
                 tokens = clip.tokenize(prompt, minimax_ref_items=ref_items)
             else:
                 tokens = clip.tokenize(prompt)
-            cond = clip.encode_from_tokens_scheduled(tokens)
+            if si in _cond_cache:
+                cond = _cond_cache.pop(si)
+                print("[H3Memory] TE batch: shot %d conditioning served "
+                      "from cache - no DiT<->TE swap" % (si + 1), flush=True)
+            else:
+                cond = clip.encode_from_tokens_scheduled(tokens)
+            # TE swap killer: with a frozen bank (memory_frames=0) every
+            # remaining shot's multimodal items are identical after shot 2's
+            # are built (fixed refs + shot-1 voice anchor + pinned clip), so
+            # encode them ALL in this one TE session instead of paying the
+            # ~4-minute DiT<->TE swap at every later boundary
+            # (measured 2026-08-23 on the Zara chain).
+            if (si == 1 and not _cond_cache and int(memory_frames or 0) == 0
+                    and ref_items and len(shots) > 2):
+                try:
+                    for _j in range(si + 1, len(shots)):
+                        _pj = shots[_j] if _j < len(shots) else shots[-1]
+                        if _sd:
+                            if _legacy_order:
+                                _pj = _pj.rstrip() + "\n" + _sd
+                            else:
+                                _pj = _compose_ref2va(_parts[0], _parts[1],
+                                                      _parts[2], _pj)
+                        _tk_j = clip.tokenize(_pj,
+                                              minimax_ref_items=ref_items)
+                        _cond_cache[_j] = \
+                            clip.encode_from_tokens_scheduled(_tk_j)
+                    print("[H3Memory] TE batch: pre-encoded %d remaining "
+                          "shot(s) in one TE session - no further TE swaps "
+                          "this take." % len(_cond_cache), flush=True)
+                except Exception as _tb_e:
+                    _cond_cache = {}
+                    print("[H3Memory] TE batch pre-encode FAILED (%s) - "
+                          "per-shot encoding kept" % _tb_e, flush=True)
             cond_hi = cond if two_pass_upscale else None
 
             def _encode_kfs(kfs, tw, th):
@@ -4730,8 +4862,15 @@ class H3MultishotMemorySampler:
                         import comfy.nested_tensor as _nt
                         _cps = list(_zs.unbind())
                         _cps[0] = _noise_one(_cps[0])
+                        if pin_noise_audio and len(_cps) > 1:
+                            # EXPERIMENTAL joint-AV statistics (consult
+                            # 2026-08-23). Field data says audio noising
+                            # dulls the voice - dial defaults OFF.
+                            _cps[-1] = _noise_one(_cps[-1])
+                            _what = "video+audio halves of the AV pin"
+                        else:
+                            _what = "video half of the AV pin"
                         _pin_src["samples"] = _nt.NestedTensor(_cps)
-                        _what = "video half of the AV pin"
                     else:
                         _pin_src["samples"] = _noise_one(_zs)
                         _what = "pin"
@@ -5105,7 +5244,7 @@ class H3MultishotMemorySampler:
                 imgs = imgs.reshape(-1, imgs.shape[-3], imgs.shape[-2],
                                     imgs.shape[-1])
             if (continuity == "context_pin"
-                    and chain_gain_control == "refresh_pin"):
+                    and chain_gain_control in ("refresh_pin", "level_pin")):
                 # REFRESH THE CARRIER IN THE PIXEL DOMAIN. Every earlier lever
                 # either cleaned shipped frames after the loop (flatten,
                 # master_normalize) or softened the pin through a latent
@@ -5146,17 +5285,54 @@ class H3MultishotMemorySampler:
                     if si > 0 and _rp_ref and _lap_now > 1e-12:
                         _g_meas = _lap_now / float(_rp_ref)
                         _g_raw = _g_meas * _rp_div_last
-                        if _g_raw > 1.0:
-                            _rp_gain = 0.5 * _rp_gain + 0.5 * _g_raw
+                        # v5.2: learn DOWNWARD too, floored at 1.0. Gentle
+                        # scenes measured raw ~0.98-1.02 (flat-light close-up
+                        # 2026-08-23) and the 1.15 seed over-softened their
+                        # first joins; the floor means the divisor can relax
+                        # to neutral but never sharpens the pin.
+                        _rp_gain = max(1.0, 0.5 * _rp_gain + 0.5 * _g_raw)
                         print("[H3Memory] refresh_pin: hop gain measured "
                               "%.3f (raw %.3f, EMA %.3f)"
                               % (_g_meas, _g_raw, _rp_gain), flush=True)
-                    _lvl, _sig_rp = _cg_flatten(
-                        _ptail, float(_rp_ref) / _rp_gain if _rp_ref
-                        else 0.0)
-                    _rp_div_last = _rp_gain
-                    _lvl = _lvl.clamp(0, 1)
-                    _z_new = video_vae.encode(_lvl)
+                    if chain_gain_control == "level_pin":
+                        # Closed-loop LATENT leveling (2026-08-23 consult,
+                        # 4-model consensus): tilt the raw pin latents' high
+                        # band, decode to VERIFY in the calibrated pixel
+                        # metric, iterate to parity. No VAE encode - the pin
+                        # keeps native latent statistics, so the join cannot
+                        # read as a distribution step. Levels to the ABSOLUTE
+                        # shot-1 anchor, no EMA (EMA lag compounds).
+                        import torch.nn.functional as _F_lp
+                        _zt = _vlat[:, :, -_pf_rp:].clone().float()
+                        _tgt = float(_rp_ref) if _rp_ref else 0.0
+                        _sig_rp = 0.0
+                        if _tgt > 0:
+                            for _it_lp in range(3):
+                                _px = video_vae.decode(_zt.to(_vlat.dtype))
+                                if _px.ndim == 5:
+                                    _px = _px.reshape(-1, _px.shape[-3],
+                                                      _px.shape[-2],
+                                                      _px.shape[-1])
+                                _cur_lp = _cg_lap_var(_px)
+                                if _cur_lp <= _tgt * 1.02:
+                                    break
+                                _s_lp = max(0.7, min(1.0,
+                                                     (_tgt / _cur_lp) ** 0.5))
+                                _low_lp = _F_lp.avg_pool3d(
+                                    _zt, (1, 3, 3), stride=1,
+                                    padding=(0, 1, 1),
+                                    count_include_pad=False)
+                                _zt = _low_lp + _s_lp * (_zt - _low_lp)
+                                _sig_rp += (1.0 - _s_lp)
+                        _rp_div_last = _rp_gain
+                        _z_new = _zt.to(_vlat.dtype)
+                    else:
+                        _lvl, _sig_rp = _cg_flatten(
+                            _ptail, float(_rp_ref) / _rp_gain if _rp_ref
+                            else 0.0)
+                        _rp_div_last = _rp_gain
+                        _lvl = _lvl.clamp(0, 1)
+                        _z_new = video_vae.encode(_lvl)
                     if _z_new.ndim == 4:
                         _z_new = _z_new.unsqueeze(0)
                     if _z_new.shape[2] >= _pf_rp:
@@ -5210,6 +5386,29 @@ class H3MultishotMemorySampler:
             aud = vae_decode_audio(audio_vae, out)
             sr = aud["sample_rate"]
             wav = aud["waveform"]
+
+            if audio_tone_control:
+                # the audio twin of chain flatten: EQ-match every later
+                # shot's long-term spectrum to shot 1's settled tail
+                # (chained audio drifts DULLER; 4-10 kHz -8..13%/hop)
+                try:
+                    if si == 0:
+                        _at_house = _at_ltas(
+                            wav[..., -int(sr * 4):].detach().cpu().float(),
+                            sr)
+                        print("[H3Memory] audio tone: house spectrum set "
+                              "from shot 1 tail", flush=True)
+                    elif _at_house is not None:
+                        wav, _at_db = _at_flatten(
+                            wav.detach().cpu().float(), _at_house, sr)
+                        wav = wav.to(aud["waveform"].dtype)
+                        if _at_db > 0:
+                            print("[H3Memory] audio tone: shot %d EQ-matched "
+                                  "to house (max band gain %.1f dB)"
+                                  % (si + 1, _at_db), flush=True)
+                except Exception as _at_e:
+                    print("[H3Memory] audio tone FAILED (%s) - shot kept "
+                          "unmatched" % _at_e, flush=True)
 
             # --- colour levelling to the FIXED house reference -----------
             # before anchor extraction and bank ingest, so the next shot's
