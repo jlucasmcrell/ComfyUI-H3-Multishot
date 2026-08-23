@@ -4191,6 +4191,29 @@ class H3MultishotMemorySampler:
                             # while the residual-chasing EMA under-dosed)
         _at_house = None  # audio_tone_control: shot 1's long-term spectrum
         _cond_cache = {}  # TE batch: pre-encoded conds for shots 3+
+        if continuity == "context_pin":
+            # FAIL FAST on the Motion-Context layout-patch conflict (issue
+            # #18): a community SolAttn fork can own PackedLayout first, and
+            # Motion Context then refuses at the SHOT 2 boundary - after ten
+            # minutes of shot 1. Probe the patch NOW, before any sampling.
+            try:
+                import nodes as _nm_ff
+                _mc_ff = _nm_ff.NODE_CLASS_MAPPINGS.get(
+                    "MiniMaxH3MotionContext")
+                if _mc_ff is not None:
+                    import sys as _sys_ff
+                    _mod_ff = _sys_ff.modules.get(_mc_ff.__module__)
+                    _probe = getattr(_mod_ff, "_ensure_layout_patch", None)
+                    if callable(_probe):
+                        _probe()
+            except Exception as _ff_e:
+                raise RuntimeError(
+                    "context_pin cannot run in this ComfyUI: the Motion-"
+                    "Context layout patch is blocked (%s). Usually another "
+                    "pack (e.g. a community SolAttn fork) already patched "
+                    "H3's PackedLayout - disable one of the two packs and "
+                    "restart, or switch continuity to 'cut'. Failing NOW "
+                    "instead of after shot 1 renders." % _ff_e)
         if float(x0_texture_clamp or 0.0) > 0.0:
             # Sampling-time texture clamp (consult 2026-08-23, kimi lever):
             # attenuate the x0-prediction's spatial high band on the LAST
