@@ -3792,7 +3792,7 @@ class H3MultishotMemorySampler:
                            "per shot, clamped +/-9 dB, half-strength in the "
                            "top band so it cannot manufacture hiss."}),
             "x0_texture_clamp": ("FLOAT", {
-                "default": 0.0, "min": 0.0, "max": 0.15, "step": 0.005,
+                "default": 0.0, "min": 0.0, "max": 0.30, "step": 0.005,
                 "tooltip": "EXPERIMENTAL: during the LAST 30% of sampling "
                            "steps, attenuate the high band of the model's "
                            "x0-prediction by this fraction (video half "
@@ -3916,7 +3916,7 @@ class H3MultishotMemorySampler:
             reference_video=None, reference_video_audio=None,
             low_ram_master=False, audio_pin_frames=0,
             pin_noise_audio=False, audio_tone_control=False,
-            x0_texture_clamp=0.0, refresh_renoise=False,
+            x0_texture_clamp=0.0, x0_clamp_window=0.30, refresh_renoise=False,
             pin_noise_ramp=False, auto_chunk_ffn=False,
             prompt=None, extra_pnginfo=None):
         # Keep the hidden PROMPT before anything can shadow it: the shot loop
@@ -4326,7 +4326,8 @@ class H3MultishotMemorySampler:
                     _smax = float(_sig_all.max())
                     _smin = float(_sig_all.min())
                     _cur = float(_sg.max() if hasattr(_sg, "max") else _sg)
-                    if (_cur - _smin) / max(1e-6, _smax - _smin) > 0.30:
+                    _win_xc = min(0.7, max(0.1, float(x0_clamp_window or 0.30)))
+                    if (_cur - _smin) / max(1e-6, _smax - _smin) > _win_xc:
                         return _d          # early steps: untouched
                     _nested_xc = getattr(_d, "is_nested", False)
                     _parts_xc = list(_d.unbind()) if _nested_xc else [_d]
@@ -4376,8 +4377,10 @@ class H3MultishotMemorySampler:
 
             model.set_model_sampler_post_cfg_function(_x0_clamp_fn)
             print("[H3Memory] x0 texture clamp ACTIVE: high band x%.3f on "
-                  "the last 30%% of steps (video half only)"
-                  % (1.0 - _xc_t), flush=True)
+                  "the last %d%% of steps (video half only)"
+                  % (1.0 - _xc_t,
+                     round(min(0.7, max(0.1, float(x0_clamp_window or 0.30)))
+                           * 100)), flush=True)
         if auto_chunk_ffn:
             # true auto-chunk (2026-08-23): if the weights would crowd
             # the card, apply sol-attn's chunked-FFN patch ourselves
