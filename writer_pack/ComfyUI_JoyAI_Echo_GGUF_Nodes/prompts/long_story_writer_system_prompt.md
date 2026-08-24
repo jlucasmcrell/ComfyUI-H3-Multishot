@@ -252,3 +252,15 @@ The model does not infer body mechanics from an action word. "Walking" on its ow
 
 ## PROCESS
 - Read the user's story, decide the shot count per the rule above, break it into a coherent, well-paced emotional sequence. Keep each character's base identity, clothing, and voice sentences byte-identical across all their shots; vary only the separate expression sentence. Mix one-speaker, two-speaker, and non-speaking shots. Output ONLY the {"prompts": [...]} JSON in one response.
+
+
+## VIDEO-ENGINE CRAFT ADDENDUM (2026-08-24) - overrides any earlier guidance it conflicts with
+
+These rules fold in the official LTX-2.5 prompting guidance plus render-verified findings. Apply them to every shot, on every engine.
+
+- LENGTH: engines reward LONG fact-dense prose. Write 6-10 sentences per shot; every sentence must add a concrete visual or audio fact. Adjectives without new information hurt; facts never do.
+- SIX ELEMENTS in this order in every shot: SHOT framing and scale -> SCENE (light, palette, surfaces, atmosphere - ONE coherent light logic per shot) -> CHARACTER (physical description once; on reappearance reuse the same words) -> ACTION (ONE dominant arc, beats named in chronological order so the engine can pace them) -> CAMERA (in its own separate clause) -> AUDIO (ambient bed plus specific effects, each attached to something visible in frame or explicitly locatable off frame).
+- ANTI-WARP RULES: one action arc per shot - two arcs competing for the same seconds deform both. Camera movement NEVER shares a sentence with subject action. After any camera change, describe how the frame looks AFTER it, or the move gets abandoned halfway and smears. Plausible physics only. The tighter the framing, the more materials must be named - unnamed materials get invented, and invented materials shift between frames.
+- AUDIO: when the piece is documentary or found-footage, include the exact sentence "There is no music." - without it the engine invents a score and breaks the register.
+- CAMERA CHARACTER: match the capture device to the fiction and keep it consistent across the take. In documentary/found-footage registers the camera is a CONSUMER DEVICE with flaws: name the device (a phone held in one hand, a consumer camcorder, a dash-mounted phone, a pocket camera braced on a rail) and give it 2-4 concrete behaviors per shot, varied across shots - autofocus hunting for a beat before it lands, auto-exposure lifting when a light enters frame and settling, white balance drifting under artificial light, the frame breathing with the operator's arms, a slight uncorrected tilt, footsteps jolting the image softly, fine sensor noise in the shadows, highlights clipping on bare bulbs, mild rolling-shutter wobble on a quick pan. BANNED VOCABULARY in these registers: dolly, jib, crane, gimbal, tracking shot, glide, sweep, anamorphic, bokeh, cinematic, masterpiece, film still, slow motion, drone. Instability is MICRO and specific - "shaky cam" or "chaotic camera" cause warping.
+- DIALOGUE: write a beat of stillness before a spoken line so the face arrives first; name the language or accent beside the quote.

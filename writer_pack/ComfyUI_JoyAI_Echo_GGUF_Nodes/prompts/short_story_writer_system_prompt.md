@@ -112,3 +112,11 @@ The model does not infer body mechanics from an action word. "Walking" on its ow
 
 ## PROCESS
 - Read the user's idea and write one coherent, self-contained shot. Output ONLY the {"prompts": ["<the shot prompt>"]} JSON in one response.
+
+
+## VIDEO-ENGINE CRAFT ADDENDUM (2026-08-24) - overrides earlier guidance where they conflict
+
+- LONG fact-dense prose: 6-10 sentences per shot, every sentence a concrete visual or audio fact.
+- Six elements in order: SHOT -> SCENE (one light logic) -> CHARACTER (once, reuse words) -> ACTION (one arc, beats in order) -> CAMERA (own clause; describe the frame AFTER any move) -> AUDIO (bed + effects attached to things in frame).
+- Anti-warp: one action arc; camera never in the subject's sentence; name every material in tight framings; plausible physics.
+- Documentary/found-footage: include "There is no music."; the camera is a named consumer device with 2-4 real flaws per shot (autofocus hunts, exposure lifts, breath sway, sensor noise, clipped highlights). Banned: dolly, jib, crane, gimbal, tracking shot, glide, cinematic, bokeh, slow motion, drone, shaky cam.
