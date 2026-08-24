@@ -1216,7 +1216,13 @@ def _install_auto_reserve(patcher, model_name):
                 # tight-path note; the 2026-08-23 767 s/it crawl planned
                 # reserve = pool + wddm - keepout and peaked 1.1 GB into
                 # the zone this exists to keep clear).
-                _target = _pool_real + _wddm
+                # FIXED 2026-08-24 (finetooth): the target must sit on top of
+                # the RESERVED pool (which already carries the x1.25 overrun
+                # margin), not the bare measured pool. Comparing reserve
+                # against pool+wddm silently vetoed the raise whenever the
+                # measured pool exceeded 36% of the card - i.e. on every
+                # production shape this guard exists for.
+                _target = max(int(reserve), _pool_real) + _wddm
                 if (_w + _pool_real + _AUTO_KEEPOUT + _wddm > _free
                         and reserve < _target):
                     _target = min(_target,
@@ -1233,8 +1239,11 @@ def _install_auto_reserve(patcher, model_name):
                                        + _wddm - _free)) / 2**30),
                           flush=True)
                     reserve = _target
-        except Exception:
-            pass
+        except Exception as _hr_e:
+            # never silent: 275 lines of clamp/headroom logic funneled into a
+            # bare pass meant any error here dropped the raise with no trace
+            print("[H3AutoReserve] clamp/headroom pass skipped on error: %s"
+                  % _hr_e, flush=True)
         _auto_session[key] = reserve
         print(f"[H3AutoReserve] shape cells={cells}: reserving "
               f"{reserve/2**30:.1f} GB ({how})", flush=True)
@@ -3794,13 +3803,14 @@ class H3MultishotMemorySampler:
             "refresh_renoise": ("BOOLEAN", {
                 "default": False, "label_on": "variance-match the splice",
                 "label_off": "off",
-                "tooltip": "refresh_pin only: after the levelled tail is "
-                           "re-encoded, add seeded noise to restore the "
-                           "splice to the RAW pin's variance, so the model "
-                           "reads it as native latents instead of a "
-                           "distribution step (2026-08-23 consult: 'the one "
-                           "change that would have fixed v4's visible "
-                           "cuts')."}),
+                "tooltip": "refresh_pin only: variance-match the re-encoded "
+                           "splice back to raw pin statistics with seeded "
+                           "noise. TESTED 2026-08-23 AND IT BACKFIRES: the "
+                           "injected noise makes the model re-draw the join "
+                           "harder every hop (raw hop gain ran 1.44->1.91 "
+                           "over 8 shots vs a stable 1.16 with this off). "
+                           "Same failure mode as pin_noise past 0.10. Leave "
+                           "off."}),
             "pin_noise_ramp": ("BOOLEAN", {
                 "default": False, "label_on": "graded seam floor",
                 "label_off": "uniform",
@@ -4292,6 +4302,7 @@ class H3MultishotMemorySampler:
             import torch.nn.functional as _F_xc
             _xc_t = float(x0_texture_clamp)
             model = model.clone()
+            _xc_fired = [False]
 
             def _x0_clamp_fn(args):
                 try:
@@ -4309,13 +4320,41 @@ class H3MultishotMemorySampler:
                     _nested_xc = getattr(_d, "is_nested", False)
                     _parts_xc = list(_d.unbind()) if _nested_xc else [_d]
                     _v_xc = _parts_xc[0]
+                    _flat_xc = None
+                    _nv_xc = 0
                     if _v_xc.ndim != 5:
-                        return _d
+                        # H3 samples the joint AV latent in comfy's packed
+                        # [B,1,N] form (pack_latents): the first C*T*H*W
+                        # elements are the video stream in plain C-order,
+                        # so the 5-D view is a single reshape.
+                        _shp = getattr(args.get("model", None),
+                                       "latent_shapes", None)
+                        if (_v_xc.ndim == 3 and _shp and len(_shp) >= 1
+                                and len(_shp[0]) == 5):
+                            import math as _math_xc
+                            _nv_xc = int(_math_xc.prod(list(_shp[0])[1:]))
+                            if 0 < _nv_xc <= _v_xc.shape[-1]:
+                                _flat_xc = _v_xc
+                                _v_xc = _v_xc[:, :, :_nv_xc].reshape(
+                                    [_v_xc.shape[0]] + list(_shp[0])[1:])
+                        if _flat_xc is None:
+                            return _d
+                    if not _xc_fired[0]:
+                        _xc_fired[0] = True
+                        print("[H3Memory] x0 texture clamp ENGAGED (%s form, "
+                              "video %s)" % ("packed" if _flat_xc is not None
+                                             else "unpacked",
+                                             tuple(_v_xc.shape)), flush=True)
                     _low_xc = _F_xc.avg_pool3d(
                         _v_xc.float(), (1, 3, 3), stride=1,
                         padding=(0, 1, 1), count_include_pad=False)
                     _vo = (_low_xc + (1.0 - _xc_t)
                            * (_v_xc.float() - _low_xc)).to(_v_xc.dtype)
+                    if _flat_xc is not None:
+                        _out_xc = _flat_xc.clone()
+                        _out_xc[:, :, :_nv_xc] = _vo.reshape(
+                            _flat_xc.shape[0], 1, _nv_xc)
+                        return _out_xc
                     if _nested_xc:
                         import comfy.nested_tensor as _nt_xc
                         _parts_xc[0] = _vo
@@ -4894,8 +4933,16 @@ class H3MultishotMemorySampler:
                     _low = _F.avg_pool2d(_flat, 3, stride=1, padding=1,
                                          count_include_pad=False)
                     _hp = _flat - _low
-                    # measure on the tail (what gets pinned): last ~8 latent frames
-                    _tail = max(1, min(_tt, 8))
+                    # measure on the tail (what gets pinned). FIXED 2026-08-24
+                    # (finetooth bug 3b): the window must match what the pin
+                    # actually consumes (pin_frames latents, 22 by default) -
+                    # calibrating on 8 frames left the other 14 consumed
+                    # frames with a gain never measured on them.
+                    try:
+                        _pf_fp = int(pin_frames)
+                    except Exception:
+                        _pf_fp = 22
+                    _tail = max(1, min(_tt, _pf_fp))
                     _hp_t = _hp.reshape(_b, _tt, _c, _hh, _ww)[:, -_tail:]
                     _e = float(_hp_t.pow(2).mean())
                     if _pin_hf0 is None:
@@ -4978,9 +5025,22 @@ class H3MultishotMemorySampler:
                             # frames touching the continuation - the
                             # model re-imagines old context, the seam
                             # stays bit-exact.
-                            _wv = torch.linspace(
-                                2.0, 0.0, steps=_z.shape[2],
-                                device=_z.device)
+                            # FIXED 2026-08-24 (finetooth bug 1): the ramp
+                            # must live on the PIN WINDOW (the last
+                            # pin_frames latents - the only part the next
+                            # shot consumes), not the whole shot axis.
+                            # Spanning the full shot put the 2x deep end on
+                            # frames the pin discards, so the consumed dose
+                            # shrank as shots got longer.
+                            try:
+                                _pf_r = max(5, min(int(pin_frames),
+                                                   _z.shape[2]))
+                            except Exception:
+                                _pf_r = _z.shape[2]
+                            _wv = torch.full((_z.shape[2],), 2.0,
+                                             device=_z.device)
+                            _wv[-_pf_r:] = torch.linspace(
+                                2.0, 0.0, steps=_pf_r, device=_z.device)
                             _wv[-4:] = 0.0
                             _tv = (_t * _wv).clamp(0.0, 0.5).view(
                                 1, 1, -1, 1, 1)
@@ -5035,27 +5095,30 @@ class H3MultishotMemorySampler:
                 if si == 0:
                     print(f"[H3Memory] TE on {_te_dev}, DiT on {_dit_dev} - "
                           f"separate devices, TE stays resident.", flush=True)
-                    # A remote TE loads nothing locally - but models left over
-                    # from the PREVIOUS run may still be resident, and skipping
-                    # the sweep hands AutoReserve a card that looks nearly full
-                    # (measured 2026-08-21: a stale 15 GB TE -> TIGHT path ->
-                    # driver spill -> shot 1 at 65 s/it vs 27 s/it clean).
+                # FIXED 2026-08-24 (finetooth): the sweep must run EVERY shot
+                # on this lane, not just shot 1. The lane reasons about the
+                # remote TE, but the VAEs are LOCAL - gating on si == 0 left
+                # them resident through every DiT reload (+5.5 GB squeeze),
+                # and AutoReserve's first measured plan then baked the
+                # too-low free reading for the whole session. (Original
+                # si==0 rationale: a stale 15 GB TE from an earlier run ->
+                # TIGHT path -> 65 s/it vs 27 clean, measured 2026-08-21.)
+                try:
+                    _dev0 = _mm.get_torch_device()
+                    _b40 = _mm.get_free_memory(_dev0) / (1024 ** 3)
                     try:
-                        _dev0 = _mm.get_torch_device()
-                        _b40 = _mm.get_free_memory(_dev0) / (1024 ** 3)
-                        try:
-                            _mm.unload_all_models()
-                        except Exception:
-                            pass
-                        _mm.free_memory(_mm.get_total_memory(_dev0) * 0.9, _dev0)
-                        _mm.soft_empty_cache()
-                        _af0 = _mm.get_free_memory(_dev0) / (1024 ** 3)
-                        if _af0 - _b40 > 0.5:
-                            print("[H3Memory] cleared %.1f GB of leftovers "
-                                  "from earlier runs before the first DiT "
-                                  "load." % (_af0 - _b40), flush=True)
+                        _mm.unload_all_models()
                     except Exception:
                         pass
+                    _mm.free_memory(_mm.get_total_memory(_dev0) * 0.9, _dev0)
+                    _mm.soft_empty_cache()
+                    _af0 = _mm.get_free_memory(_dev0) / (1024 ** 3)
+                    if _af0 - _b40 > 0.5:
+                        print("[H3Memory] freed %.1f GB (local VAEs + "
+                              "leftovers) before the DiT load."
+                              % (_af0 - _b40), flush=True)
+                except Exception:
+                    pass
             else:
                 try:
                     clip.patcher.model.to(_mm.text_encoder_offload_device())
@@ -5389,6 +5452,22 @@ class H3MultishotMemorySampler:
             if imgs.ndim == 5:
                 imgs = imgs.reshape(-1, imgs.shape[-3], imgs.shape[-2],
                                     imgs.shape[-1])
+            # --- colour levelling to the FIXED house reference -----------
+            # MOVED here 2026-08-24 (finetooth bug 4): must run BEFORE the
+            # refresh-pin re-encode below, so the pin - the dominant
+            # conditioning under context_pin - inherits corrected statistics.
+            # Previously the pin was rebuilt from uncorrected pixels while the
+            # shipped tail was corrected: a baked-in colour step per join.
+            if si == 0:
+                _house_frame = imgs[0:1].detach().clone()
+            if color_level == "mvgd":   # per-shot, rolling house reference
+                if si == 0:
+                    _cc_mu, _cc_cov = _cc_stats(imgs[-min(24, imgs.shape[0]):])
+                    print("[H3Memory] colour house stats set (shot 1 settled "
+                          "tail)", flush=True)
+                else:
+                    imgs = _cc_apply(imgs, _cc_mu, _cc_cov)
+                    print("[H3Memory] colour levelled to house", flush=True)
             if (continuity == "context_pin"
                     and chain_gain_control in ("refresh_pin", "level_pin")):
                 # REFRESH THE CARRIER IN THE PIXEL DOMAIN. Every earlier lever
@@ -5448,7 +5527,29 @@ class H3MultishotMemorySampler:
                         print("[H3Memory] refresh_pin: hop gain measured "
                               "%.3f (raw %.3f, EMA %.3f)"
                               % (_g_meas, _g_raw, _rp_gain), flush=True)
-                    if chain_gain_control == "level_pin":
+                    if si == 0:
+                        # FIXED 2026-08-24 (finetooth bug 5): never alter
+                        # shot 1's pin. _rp_ref, _pin_sig0 and _pin_hf0 must
+                        # all describe the SAME raw material; leveling shot 1
+                        # by the seed divisor split the anchors (~13% softer
+                        # tail) and the EMA chased the mismatch as fake drift.
+                        _z_new = None
+                        _rp_div_last = 1.0
+                        print("[H3Memory] refresh_pin: shot 1 pin kept raw "
+                              "(anchor consistency)", flush=True)
+                    elif (chain_gain_control == "refresh_pin"
+                            and _rp_gain <= 1.005):
+                        # Softening/neutral scene: the divisor is ~1.0, so
+                        # leveling would change nothing - but the decode ->
+                        # re-encode round trip still costs texture (measured
+                        # 2026-08-23: refresh ended 11% softer than flatten
+                        # on a bright close-up whose raw gains ran 0.71-0.90).
+                        # Keep the raw pin untouched.
+                        _rp_div_last = 1.0
+                        _z_new = None
+                        print("[H3Memory] refresh_pin: divisor ~1.0, raw pin "
+                              "kept (VAE round-trip skipped)", flush=True)
+                    elif chain_gain_control == "level_pin":
                         # Closed-loop LATENT leveling (2026-08-23 consult,
                         # 4-model consensus): tilt the raw pin latents' high
                         # band, decode to VERIFY in the calibrated pixel
@@ -5487,9 +5588,9 @@ class H3MultishotMemorySampler:
                         _rp_div_last = _rp_gain
                         _lvl = _lvl.clamp(0, 1)
                         _z_new = video_vae.encode(_lvl)
-                    if _z_new.ndim == 4:
+                    if _z_new is not None and _z_new.ndim == 4:
                         _z_new = _z_new.unsqueeze(0)
-                    if _z_new.shape[2] >= _pf_rp:
+                    if _z_new is not None and _z_new.shape[2] >= _pf_rp:
                         _sig_raw_rp = float(
                             _vlat[:, :, -_pf_rp:].float().std())
                         # SPLICE ALIGNMENT (finetooth 2026-08-23): the VAE's
@@ -5563,7 +5664,7 @@ class H3MultishotMemorySampler:
                               "re-encoded; %d latent frames spliced, "
                               "audio raw" % (_rp_gain, _sig_rp, _pf_rp),
                               flush=True)
-                    else:
+                    elif _z_new is not None:
                         print("[H3Memory] refresh_pin: encode returned %d "
                               "latent frames < pin %d - raw pin kept"
                               % (_z_new.shape[2], _pf_rp), flush=True)
@@ -5621,30 +5722,20 @@ class H3MultishotMemorySampler:
                     print("[H3Memory] audio tone FAILED (%s) - shot kept "
                           "unmatched" % _at_e, flush=True)
 
-            # --- colour levelling to the FIXED house reference -----------
-            # before anchor extraction and bank ingest, so the next shot's
-            # conditioning inherits corrected statistics (closed loop)
-            if si == 0:
-                _house_frame = imgs[0:1].detach().clone()
-            if color_level == "mvgd":   # per-shot, rolling house reference
-                if si == 0:
-                    _cc_mu, _cc_cov = _cc_stats(imgs[-min(24, imgs.shape[0]):])
-                    print("[H3Memory] colour house stats set (shot 1 settled "
-                          "tail)", flush=True)
-                else:
-                    imgs = _cc_apply(imgs, _cc_mu, _cc_cov)
-                    print("[H3Memory] colour levelled to house", flush=True)
+            # (colour levelling moved BEFORE the refresh-pin block - finetooth
+            # bug 4: the pin was re-encoded from pre-correction pixels, baking
+            # a colour step into every join that the closed loop never saw)
 
-
-            if (si == 0 and chain_gain_control != "off"
+            if (si == 0 and chain_gain_control in ("flatten", "match_output")
                     and continuity in ("context_pin", "latent_handoff")):
-                print("[H3Memory] NOTE: chain_gain_control corrects the "
+                # NOTE scope fixed 2026-08-24: only the frame-domain modes
+                # cannot reach the pin. flatten_pin/refresh_pin/level_pin
+                # operate on the pin directly and must not print this.
+                print("[H3Memory] NOTE: chain_gain_control=%s corrects the "
                       "decoded frames and the bank, but continuity=%s carries "
                       "the previous shot's RAW LATENTS, which it cannot reach "
-                      "- the texture ratchet rides the pin regardless "
-                      "(measured +142%% over 3 shots with flatten ON). It is "
-                      "effective on frame-carried modes (first_frame, cut)."
-                      % continuity, flush=True)
+                      "- use a *_pin mode to treat the pin itself."
+                      % (chain_gain_control, continuity), flush=True)
             if chain_gain_control != "off":
                 _w = min(_CG_WIN, imgs.shape[0])
                 if si == 0:
