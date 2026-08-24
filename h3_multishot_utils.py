@@ -3833,6 +3833,17 @@ class H3MultishotMemorySampler:
                            "Switches chunk gate is ALSO on, the FFN gets "
                            "chunked twice - harmless numerically, slight "
                            "extra overhead."}),
+            "x0_clamp_window": ("FLOAT", {
+                "default": 0.30, "min": 0.10, "max": 0.70, "step": 0.05,
+                "tooltip": "x0_texture_clamp only: fraction of the sampling "
+                           "schedule (measured from the END) the clamp acts "
+                           "on. 0.30 = last 30% of steps (the original "
+                           "behavior). Widening to ~0.50 roughly doubles the "
+                           "clamp's leverage at the same dose - it damps "
+                           "structure while it forms instead of shaving it "
+                           "after - and is gentler than raising the dose "
+                           "past the waxy-shimmer threshold. Appended widget: "
+                           "saved canvases without it keep the 0.30 default."}),
         },
             # hidden inputs are not widgets, so saved workflows are unaffected
             "hidden": {"prompt": "PROMPT", "extra_pnginfo": "EXTRA_PNGINFO"}}
