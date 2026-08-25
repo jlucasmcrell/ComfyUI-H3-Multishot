@@ -36,6 +36,7 @@ for _m in ("h3_keyframes",       # keyframe anchors
            "h3_lora_stack",      # H3LoraStack
            "h3_episode_tools",   # StudioControls / StudioSwitches / AnySwitch
            "h3_avbank_probe",   # AV bank diagnostics
+           "h3_chain_normalize",  # post-chain texture/colour leveller
            "rift_engine_script",  # RiftEngineScript (H3 + LTX-2.5)
            "rift_prompt_source",  # RiftPromptSource (txt briefs + json)
            "rift_script_picker",  # RiftScriptPicker + speaker stash
