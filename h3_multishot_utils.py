@@ -2182,7 +2182,8 @@ class H3MultishotSampler:
                            "refs+keyframes merge patch. NOTE: verified on the "
                            "ref2va checkpoint; fl2va was not trained with "
                            "reference rows, so wire the ref2va model when "
-                           "using this."}),
+                           "using this. For a SECOND character's voice use "
+                           "voice_ref_2 / voice_ref_3."}),
             "sampler_name": (_sampler_names(), {
                 "default": "res_multistep",
                 "tooltip": "Sampling algorithm. res_multistep is the default "
@@ -2261,6 +2262,25 @@ class H3MultishotSampler:
                            "trim, so consecutive files overlap by ~1s; the "
                            "master is still the clean join. Costs one file "
                            "write per shot."}),
+            # 2.6.6 per-character voices (Civitai: sebboraketti22295,
+            # snake88). AUDIO sockets take no widget slot, so appending them
+            # here cannot shift widgets_values in saved canvases.
+            "voice_ref_2": ("AUDIO", {
+                "tooltip": "SECOND character's voice anchor: a clean solo "
+                           "line of <Subject 2>. Each connected voice_ref "
+                           "input takes the next <Audio> slot in wiring "
+                           "order (voice_ref, then this, then voice_ref_3) "
+                           "and the conditioning declares that audio to be "
+                           "that subject's voice, so each character speaks "
+                           "with their own timbre. The console prints the "
+                           "final <Audio n> -> <Subject s> map. Describe "
+                           "who <Subject 2> is in your shot prompts. Needs "
+                           "the ref2va checkpoint, like voice_ref."}),
+            "voice_ref_3": ("AUDIO", {
+                "tooltip": "THIRD character's voice anchor (<Subject 3>). "
+                           "See voice_ref_2. Every reference audio rides "
+                           "every sampling step, so three voices cost "
+                           "real speed - wire only what the scene needs."}),
         }}
 
     RETURN_TYPES = ("IMAGE", "AUDIO", "INT", "IMAGE", "AUDIO")
@@ -2277,7 +2297,7 @@ class H3MultishotSampler:
             self_anchor_voice=False, reference_image_size="match",
             preview_first_shot=False, chain_gain_control="off",
             save_every_shot=False, sigmas=None, output_scale=1.0,
-            upscale_model=None):
+            upscale_model=None, voice_ref_2=None, voice_ref_3=None):
         # two_pass_upscale is REMOVED as of 2.1.3. It spatially interpolated
         # the raw latent between passes, and H3's latent is not a spatially
         # smooth representation - interpolated values land off-manifold and
@@ -2301,31 +2321,21 @@ class H3MultishotSampler:
         from comfy_extras import nodes_minimax_h3 as mmh3
         from comfy_extras.nodes_audio import vae_decode_audio
 
-        # --- voice anchor: encode ONCE, ride in every shot's conditioning ---
-        voice_block = None
-        if voice_ref is not None:
-            wav = voice_ref["waveform"]
-            if wav.ndim == 2:
-                wav = wav.unsqueeze(0)
-            wav = wav[:1]
-            if wav.shape[1] == 1:              # mono crashes the packed layout
-                wav = wav.repeat(1, 2, 1)
-            elif wav.shape[1] > 2:
-                wav = wav[:, :2]
-            sr = int(voice_ref["sample_rate"])
-            vae_sr = getattr(audio_vae, "audio_sample_rate", 32000)
-            if sr != vae_sr:
-                import torchaudio
-                wav = torchaudio.functional.resample(wav, sr, vae_sr)
-                sr = vae_sr
-            limit = 15 * sr                    # ref rows cost speed EVERY step
-            if wav.shape[-1] > limit:
-                wav = wav[..., :limit]
-            vz = audio_vae.encode(wav.movedim(1, -1))     # [1, 32, 2, T]
-            voice_block = {"kind": "audio", "ref_audio_t": vz.shape[-1],
-                           "audio_latent": vz}
-            print(f"[H3Multishot] voice anchor: {wav.shape[-1]/sr:.1f}s ref "
-                  f"audio rides in every shot as <Audio 1>.", flush=True)
+        # --- voice anchors: encode ONCE, ride in every shot's conditioning ---
+        # 2.6.6: one ref PER SUBJECT (Civitai: sebboraketti22295, snake88).
+        # voice_ref -> <Subject 1>, voice_ref_2 -> <Subject 2>, voice_ref_3
+        # -> <Subject 3>; <Audio n> slots number in wiring order, and
+        # _subject_defs declares each audio to be its subject's voice.
+        voice_blocks, voice_subjects = [], []
+        for _vsub, _vr in ((1, voice_ref), (2, voice_ref_2), (3, voice_ref_3)):
+            if _vr is None:
+                continue
+            _vb, _vsec = _encode_voice_ref(audio_vae, _vr)
+            voice_blocks.append(_vb)
+            voice_subjects.append(_vsub)
+            print(f"[H3Multishot] voice anchor: {_vsec:.1f}s ref audio rides "
+                  f"in every shot as <Audio {len(voice_blocks)}> "
+                  f"(<Subject {_vsub}>'s voice).", flush=True)
 
         # --- subject/character reference images (PR #10, @moonwhaler): encode
         # ONCE, ride in every shot as fixed <Picture 1..N> slots - stable
@@ -2468,17 +2478,17 @@ class H3MultishotSampler:
                                          "image": img})
                 else:
                     keyframes.append({"resolved_frame_index": 0, "image": img})
-            if voice_block is not None or ref_image_blocks:
+            if voice_blocks or ref_image_blocks:
                 # ref-items presentation, in fixed order: the subject/character
                 # refs keep their <Picture 1..N> slots, the chain frame takes
-                # the next <Picture> slot, the voice gets <Audio 1>. Payload-
+                # the next <Picture> slot, the voices get <Audio 1..n> in
+                # wiring order. Payload-
                 # side the keyframe latent and the ref rows COMPOSE via the
                 # refs+keyframes merge patch (h3_avbank_probe) - without that
                 # patch comfy's refs branch would discard the keyframe latent.
                 items = list(ref_image_items)
                 items.extend({"type": "image", "data": im} for im in images)
-                if voice_block is not None:
-                    items.append({"type": "audio"})
+                items.extend({"type": "audio"} for _ in voice_blocks)
                 # The tokenizer emits these as bare "<Picture k>: " / "<Audio j>: "
                 # labels before the prompt. Until 2026-08-21 this sampler sent no
                 # subject_definitions at all, so the model got labelled references
@@ -2488,10 +2498,12 @@ class H3MultishotSampler:
                                    sum(1 for i in items if i["type"] == "audio"),
                                    0,
                                    # this sampler has no reference_subjects input,
-                                   # so every portrait is <Subject 1>
+                                   # so every portrait is <Subject 1>; extra
+                                   # subjects exist only through their voices
                                    image_subjects=None,
                                    return_parts=True,
-                                   n_chain=len(images))
+                                   n_chain=len(images),
+                                   audio_subjects=voice_subjects)
                 if isinstance(_p, tuple):
                     prompt = _compose_ref2va(_p[0], _p[1], _p[2], prompt)
                     if si == 1:
@@ -2530,8 +2542,7 @@ class H3MultishotSampler:
                     "minimax_frame_count": frame_count,
                 })
             refs = list(ref_image_blocks)
-            if voice_block is not None:
-                refs.append(voice_block)
+            refs.extend(voice_blocks)
             if refs:
                 # image blocks before audio blocks, matching the item order
                 cond = node_helpers.conditioning_set_values(cond, {
@@ -2605,8 +2616,9 @@ class H3MultishotSampler:
             _auto_set_payload(
                 "kf%da%d%s" % (
                     1 if (si > 0 or start_image is not None) else 0,
-                    1 if (voice_ref is not None
-                          or (self_anchor_voice and si > 0)) else 0,
+                    # every voice anchor riding this shot (the self-anchor
+                    # block joins the list after shot 1 renders)
+                    len(voice_blocks),
                     "2p" if two_pass_upscale else ""))
             _mb = _auto_measure_begin()
             try:
@@ -2703,7 +2715,7 @@ class H3MultishotSampler:
                                       flush=True)
 
             prev_last = imgs[-1:].clone()
-            if si == 0 and self_anchor_voice and voice_block is None:
+            if si == 0 and self_anchor_voice and not voice_blocks:
                 # THE self-anchor: shot 1's own rendered voice becomes the
                 # reference for every later shot. The decoded audio is
                 # already at the VAE's rate and stereo, so no guard needed -
@@ -2713,8 +2725,10 @@ class H3MultishotSampler:
                 if aw.shape[-1] > limit:
                     aw = aw[..., :limit]
                 vz = audio_vae.encode(aw.movedim(1, -1))
-                voice_block = {"kind": "audio", "ref_audio_t": vz.shape[-1],
-                               "audio_latent": vz}
+                voice_blocks.append({"kind": "audio",
+                                     "ref_audio_t": vz.shape[-1],
+                                     "audio_latent": vz})
+                voice_subjects.append(1)
                 print(f"[H3Multishot] self-anchor: shot 1's voice "
                       f"({aw.shape[-1]/sr:.1f}s) is now <Audio 1> for the "
                       f"remaining {n - 1} shot(s).", flush=True)
@@ -2893,6 +2907,36 @@ def _cc_apply(imgs, house_mu, house_cov, strength=1.0, block=8):
     return out
 
 
+def _encode_voice_ref(audio_vae, aud):
+    """AUDIO input -> voice reference block, plus its length in seconds.
+
+    One place for the guards both samplers used to carry inline: batch 1,
+    mono duplicated to stereo (mono crashes the packed layout), extra
+    channels dropped, resampled to the VAE's rate, and trimmed to 15s
+    because reference rows cost speed on EVERY sampling step.
+    """
+    wav = aud["waveform"]
+    if wav.ndim == 2:
+        wav = wav.unsqueeze(0)
+    wav = wav[:1]
+    if wav.shape[1] == 1:              # mono crashes the packed layout
+        wav = wav.repeat(1, 2, 1)
+    elif wav.shape[1] > 2:
+        wav = wav[:, :2]
+    sr = int(aud["sample_rate"])
+    vae_sr = getattr(audio_vae, "audio_sample_rate", 32000)
+    if sr != vae_sr:
+        import torchaudio
+        wav = torchaudio.functional.resample(wav, sr, vae_sr)
+        sr = vae_sr
+    limit = 15 * sr                    # ref rows cost speed EVERY step
+    if wav.shape[-1] > limit:
+        wav = wav[..., :limit]
+    vz = audio_vae.encode(wav.movedim(1, -1))         # [1, 32, 2, T]
+    return ({"kind": "audio", "ref_audio_t": vz.shape[-1],
+             "audio_latent": vz}, wav.shape[-1] / float(sr))
+
+
 def _parse_ref_groups(spec, n_image):
     """"3,3" -> [1,1,1,2,2,2]: which subject each reference picture belongs to.
 
@@ -2938,8 +2982,14 @@ def _ref2va_task_types(n_image, n_audio, n_video):
     return "[%s]" % " + ".join(t or ["reference generation"])
 
 
-def _ref2va_summary(n_image, n_audio, n_video, n_sub, n_chain=0):
-    """One short paragraph naming the subjects and what each reference gives."""
+def _ref2va_summary(n_image, n_audio, n_video, n_sub, n_chain=0,
+                    audio_subjects=None):
+    """One short paragraph naming the subjects and what each reference gives.
+
+    audio_subjects: only passed (non-None) in per-subject voice mode - a list
+    with one subject number per leading standalone voice audio. None keeps
+    the classic single-voice sentence byte-for-byte.
+    """
     s = [_ref2va_task_types(n_image, n_audio, n_video)]
     who = ("<Subject 1>" if n_sub <= 1 else
            ", ".join("<Subject %d>" % i for i in range(1, n_sub + 1)))
@@ -2959,8 +3009,21 @@ def _ref2va_summary(n_image, n_audio, n_video, n_sub, n_chain=0):
                  (", ".join("<Video %d>" % k for k in range(1, n_video + 1)),
                   "carries" if n_video == 1 else "carry"))
     if n_audio:
-        s.append("%s supplies <Subject 1>'s voice timbre." %
-                 ", ".join("<Audio %d>" % j for j in range(1, n_audio + 1)))
+        if audio_subjects is None:
+            s.append("%s supplies <Subject 1>'s voice timbre." %
+                     ", ".join("<Audio %d>" % j for j in range(1, n_audio + 1)))
+        else:
+            for j, vs in enumerate(audio_subjects, 1):
+                s.append("<Audio %d> supplies <Subject %d>'s voice timbre."
+                         % (j, vs))
+            if n_audio > len(audio_subjects):
+                s.append("%s %s the live sound of earlier moments of the "
+                         "scene." %
+                         (", ".join("<Audio %d>" % j for j in
+                                    range(len(audio_subjects) + 1,
+                                          n_audio + 1)),
+                          "carries" if n_audio - len(audio_subjects) == 1
+                          else "carry"))
     return "summary:\n" + " ".join(s)
 
 
@@ -2983,7 +3046,8 @@ def _compose_ref2va(defs, summary, retention, body):
 
 
 def _subject_defs(n_image, n_audio, n_video, speaker="the person",
-                  image_subjects=None, return_parts=False, n_chain=0):
+                  image_subjects=None, return_parts=False, n_chain=0,
+                  audio_subjects=None):
     """Official H3 ref2va subject_definitions + retention_analysis block.
 
     The tokenizer emits reference items as bare "<Picture k>: ",
@@ -3002,6 +3066,20 @@ def _subject_defs(n_image, n_audio, n_video, speaker="the person",
     same individual and it rendered the average - reported on Civitai as
     "the video doesn't contain anything that resembles the reference people".
     None keeps the old single-subject behaviour exactly.
+
+    audio_subjects (2.6.6, asked for on Civitai by sebboraketti22295 and
+    snake88) is the audio-lane twin of image_subjects: one entry per LEADING
+    standalone voice-reference audio, in <Audio j> order, naming the subject
+    whose voice it is. Until 2.6.6 every audio reference was declared
+    <Subject 1>'s voice, so a second character's ref only pulled <Subject 1>
+    toward an averaged timbre. None, [] and [1] (the classic single
+    voice_ref) keep the old text byte-for-byte - INCLUDING the old
+    audio-to-video pairing, which mislabels a lone voice ref as <Video 1>'s
+    soundtrack when bank clips are present; that wording is what every
+    verified single-voice render shipped with, so it stays until re-measured.
+    Only a mapping that actually names a second voiced subject switches to
+    per-subject lines, and in that mode soundtrack audios pair with
+    <Video k> at the correct offset (k = j - number of voice refs).
     """
     import os as _os
     if _os.environ.get("H3_NO_SUBJECT_DEFS"):   # A/B switch for testing
@@ -3009,18 +3087,29 @@ def _subject_defs(n_image, n_audio, n_video, speaker="the person",
     if not (n_image or n_audio or n_video):
         return ""
     subs = list(image_subjects or [])
-    n_sub = max(subs) if subs else 1
+    vsubs = [int(s) for s in (audio_subjects or []) if int(s) > 0]
+    # Per-subject voice mode only engages when a voice ref actually names a
+    # subject other than 1; [1] alone must leave every line byte-identical.
+    multi_voice = bool(vsubs) and (len(vsubs) > 1 or max(vsubs) > 1)
+    n_sub = max(subs + vsubs) if (subs or vsubs) else 1
     if n_sub <= 1:
         d = ["subject_definitions:",
              "<Subject 1> is %s speaking in this scene." % speaker]
     else:
-        # Only <Subject 1> is described as speaking; H3's voice conditioning is
-        # single-speaker and naming several speakers competes for the audio lane.
+        # A subject is described as speaking only when it OWNS a voice ref.
+        # Naming several speakers used to compete for H3's single audio lane;
+        # with one reference audio per speaker each claim has its own anchor.
+        # Voiceless extras keep the old "appears" wording for that reason.
+        voiced = set(vsubs) if multi_voice else set()
         d = ["subject_definitions:",
              "<Subject 1> is %s speaking in this scene." % speaker]
         for s in range(2, n_sub + 1):
-            d.append("<Subject %d> is a different individual who also appears "
-                     "in this scene." % s)
+            if s in voiced:
+                d.append("<Subject %d> is a different individual who also "
+                         "speaks in this scene." % s)
+            else:
+                d.append("<Subject %d> is a different individual who also appears "
+                         "in this scene." % s)
     # Do NOT enumerate accessories here. This block is unconditional text on a
     # BasicGuider path - cfg 1.0, no negative branch - so anything named is
     # ADDED and can never be subtracted by the user's prompt. Naming "glasses"
@@ -3057,27 +3146,58 @@ def _subject_defs(n_image, n_audio, n_video, speaker="the person",
         s = subs[k - 1] if k <= len(subs) else 1
         d.append("<Picture %d> is a reference photograph of <Subject %d>."
                  % (k, s))
+    # In per-subject voice mode a bank clip shows EVERY subject, and claiming
+    # it shows <Subject 1> is the same averaged-identity trap image_subjects
+    # closed for pictures. Outside that mode the old wording is kept exactly.
+    _vid_who = (", ".join("<Subject %d>" % s for s in range(1, n_sub + 1))
+                if multi_voice and n_sub > 1 else "<Subject 1>")
     for k in range(1, n_video + 1):
         d.append("<Video %d> is a clip from an earlier moment of this same "
-                 "continuous scene, showing <Subject 1> in the same place "
-                 "under the same light." % k)
+                 "continuous scene, showing %s in the same place "
+                 "under the same light." % (k, _vid_who))
         r.append("<Video %d>: reference - the target video keeps the "
                  "framing, camera distance, room contents and colour "
                  "temperature of <Video %d>." % (k, k))
+    n_voice = len(vsubs) if multi_voice else 0
     for j in range(1, n_audio + 1):
+        if j <= n_voice:
+            # per-subject voice mode: this audio IS one subject's voice, and
+            # the retention line binds that timbre to that subject alone.
+            vs = vsubs[j - 1]
+            d.append("<Audio %d> is a recording of <Subject %d>'s speaking "
+                     "voice." % (j, vs))
+            r.append("<Audio %d>: reference - the target audio references the "
+                     "voice timbre in <Audio %d> so <Subject %d> speaks with "
+                     "the same voice." % (j, j, vs))
+            continue
         # Only claim it is a video's soundtrack when that <Video> label exists -
         # the guide forbids unresolved reference labels, and with no reference
         # video this used to point at a <Video 1> that was never defined.
-        d.append(("<Audio %d> is the synchronized audio track of <Video %d>, "
-                  "containing <Subject 1>'s speaking voice." % (j, j)) if j <= n_video
-                 else ("<Audio %d> is a recording of <Subject 1>'s speaking voice."
-                       % j))
-        r.append("<Audio %d>: reference - the target audio references the "
-                 "voice timbre in <Audio %d> so <Subject 1> speaks with the "
-                 "same voice." % (j, j))
+        # In per-subject voice mode the soundtracks start AFTER the voice
+        # audios, so the paired video index is offset by n_voice.
+        k = j - n_voice
+        if multi_voice:
+            if k <= n_video:
+                d.append("<Audio %d> is the synchronized audio track of "
+                         "<Video %d>, containing the live sound of that "
+                         "moment of the scene." % (j, k))
+            else:
+                d.append("<Audio %d> is a recording of the live sound of an "
+                         "earlier moment of this same scene." % j)
+            r.append("<Audio %d>: reference - the target audio continues the "
+                     "live sound of the scene heard in <Audio %d>." % (j, j))
+        else:
+            d.append(("<Audio %d> is the synchronized audio track of <Video %d>, "
+                      "containing <Subject 1>'s speaking voice." % (j, j)) if j <= n_video
+                     else ("<Audio %d> is a recording of <Subject 1>'s speaking voice."
+                           % j))
+            r.append("<Audio %d>: reference - the target audio references the "
+                     "voice timbre in <Audio %d> so <Subject 1> speaks with the "
+                     "same voice." % (j, j))
     if return_parts:
         return ("\n".join(d),
-                _ref2va_summary(n_image, n_audio, n_video, n_sub, n_chain),
+                _ref2va_summary(n_image, n_audio, n_video, n_sub, n_chain,
+                                audio_subjects=vsubs if multi_voice else None),
                 "\n".join(r))
     return "\n".join(d) + "\n" + "\n".join(r)
 
@@ -3547,7 +3667,9 @@ class H3MultishotMemorySampler:
                            "across the chain instead of re-performed from "
                            "text. The bank carries voice too, but only from "
                            "shot 2 on - this covers shot 1 as well. Trimmed to "
-                           "15s; reference rows cost speed on every step."}),
+                           "15s; reference rows cost speed on every step. For "
+                           "a SECOND character's voice use voice_ref_2 / "
+                           "voice_ref_3."}),
             "sampler_override": ("STRING", {
                 "forceInput": True,
                 "tooltip": "Link a sampler NAME here (e.g. from H3 Studio "
@@ -3723,8 +3845,10 @@ class H3MultishotMemorySampler:
                            "individual and renders the average. Comma counts in "
                            "picture order: '3,3' means pictures 1-3 are person "
                            "A and 4-6 are person B; '2,2,2' for three people. "
-                           "Only <Subject 1> is described as speaking, because "
-                           "H3's voice conditioning is single-speaker."}),
+                           "By default only <Subject 1> is described as "
+                           "speaking; wire voice_ref_2 / voice_ref_3 to give "
+                           "later subjects their own voices, and each one is "
+                           "then declared a speaker with its own timbre."}),
             "reference_video": ("IMAGE", {
                 "tooltip": "NEW IN 2.2.4. Frames of an EXISTING clip, handed to "
                            "the model as a video reference alongside the "
@@ -3844,6 +3968,26 @@ class H3MultishotMemorySampler:
                            "after - and is gentler than raising the dose "
                            "past the waxy-shimmer threshold. Appended widget: "
                            "saved canvases without it keep the 0.30 default."}),
+            # 2.6.6 per-character voices (Civitai: sebboraketti22295,
+            # snake88). AUDIO sockets take no widget slot, so appending them
+            # here cannot shift widgets_values in saved canvases.
+            "voice_ref_2": ("AUDIO", {
+                "tooltip": "SECOND character's voice anchor: a clean solo "
+                           "line of <Subject 2> (the second group in "
+                           "reference_subjects, e.g. pictures 4-6 of '3,3'). "
+                           "Each connected voice_ref input takes the next "
+                           "<Audio> slot in wiring order (voice_ref, then "
+                           "this, then voice_ref_3) and the conditioning "
+                           "declares that audio to be that subject's voice, "
+                           "so each character speaks with their own timbre. "
+                           "The console prints the final <Audio n> -> "
+                           "<Subject s> map. Trimmed to 15s; every ref rides "
+                           "every sampling step."}),
+            "voice_ref_3": ("AUDIO", {
+                "tooltip": "THIRD character's voice anchor (<Subject 3>). "
+                           "See voice_ref_2. Every reference audio rides "
+                           "every sampling step, so three voices cost real "
+                           "speed - wire only what the scene needs."}),
         },
             # hidden inputs are not widgets, so saved workflows are unaffected
             "hidden": {"prompt": "PROMPT", "extra_pnginfo": "EXTRA_PNGINFO"}}
@@ -3918,6 +4062,7 @@ class H3MultishotMemorySampler:
             pin_noise_audio=False, audio_tone_control=False,
             x0_texture_clamp=0.0, x0_clamp_window=0.30, refresh_renoise=False,
             pin_noise_ramp=False, auto_chunk_ffn=False,
+            voice_ref_2=None, voice_ref_3=None,
             prompt=None, extra_pnginfo=None):
         # Keep the hidden PROMPT before anything can shadow it: the shot loop
         # rebinds `prompt` to this shot's conditioning TEXT, so by finalize()
@@ -3969,33 +4114,23 @@ class H3MultishotMemorySampler:
                                                      steps, 1.0)[0]
         sampler = ncs.KSamplerSelect().get_sampler(sampler_name)[0]
 
-        # --- voice anchor: encode ONCE, ride in every shot's conditioning ---
+        # --- voice anchors: encode ONCE, ride in every shot's conditioning ---
         # The bank already carries voice from shot 2 on, but shot 1 renders
         # against an empty bank; an explicit ref covers the whole chain.
-        voice_block = None
-        if voice_ref is not None:
-            _vw = voice_ref["waveform"]
-            if _vw.ndim == 2:
-                _vw = _vw.unsqueeze(0)
-            _vw = _vw[:1]
-            if _vw.shape[1] == 1:          # mono crashes the packed layout
-                _vw = _vw.repeat(1, 2, 1)
-            elif _vw.shape[1] > 2:
-                _vw = _vw[:, :2]
-            _vsr = int(voice_ref["sample_rate"])
-            _vae_sr = getattr(audio_vae, "audio_sample_rate", 32000)
-            if _vsr != _vae_sr:
-                import torchaudio
-                _vw = torchaudio.functional.resample(_vw, _vsr, _vae_sr)
-                _vsr = _vae_sr
-            _lim = 15 * _vsr               # ref rows cost speed EVERY step
-            if _vw.shape[-1] > _lim:
-                _vw = _vw[..., :_lim]
-            _vz = audio_vae.encode(_vw.movedim(1, -1))       # [1, 32, 2, T]
-            voice_block = {"kind": "audio", "ref_audio_t": _vz.shape[-1],
-                           "audio_latent": _vz}
-            print(f"[H3Memory] voice anchor: {_vw.shape[-1] / _vsr:.1f}s ref "
-                  f"audio rides in every shot as <Audio 1>.", flush=True)
+        # 2.6.6: one ref PER SUBJECT (Civitai: sebboraketti22295, snake88).
+        # voice_ref -> <Subject 1>, voice_ref_2 -> <Subject 2>, voice_ref_3
+        # -> <Subject 3>; <Audio n> slots number in wiring order, and
+        # _subject_defs declares each audio to be its subject's voice.
+        voice_blocks, voice_subjects = [], []
+        for _vsub, _vr in ((1, voice_ref), (2, voice_ref_2), (3, voice_ref_3)):
+            if _vr is None:
+                continue
+            _vb, _vsec = _encode_voice_ref(audio_vae, _vr)
+            voice_blocks.append(_vb)
+            voice_subjects.append(_vsub)
+            print(f"[H3Memory] voice anchor: {_vsec:.1f}s ref audio rides in "
+                  f"every shot as <Audio {len(voice_blocks)}> "
+                  f"(<Subject {_vsub}>'s voice).", flush=True)
 
         # --- subject/character reference images: encode ONCE, fixed slots ---
         import math as _math_ri
@@ -4445,9 +4580,9 @@ class H3MultishotMemorySampler:
             for _it, _bl in zip(ref_image_items, ref_image_blocks):
                 ref_items.append(_it)
                 ref_blocks.append(_bl)
-            if voice_block is not None:
+            for _vb in voice_blocks:
                 ref_items.append({"type": "audio"})
-                ref_blocks.append(voice_block)
+                ref_blocks.append(_vb)
 
             # identity reference image(s) - JoyEcho seeds identity, the bank
             # carries it afterwards
@@ -4720,7 +4855,8 @@ class H3MultishotMemorySampler:
                     "H3_LEGACY_SECTION_ORDER"))
                 _parts = _subject_defs(_n_img, _n_aud, _n_vid,
                                        image_subjects=_groups,
-                                       return_parts=True)
+                                       return_parts=True,
+                                       audio_subjects=voice_subjects)
                 # "" when there are no references at all, else a 3-tuple.
                 _parts = _parts if isinstance(_parts, tuple) else None
                 _sd = "\n".join(_parts) if _parts else ""
@@ -5851,7 +5987,7 @@ class H3MultishotMemorySampler:
                           % (_t2, "CLEAN" if (_t2 < 0 or _t2 >= 1.30)
                              else "SUPPRESSED-START RISK"), flush=True)
 
-            if si == 0 and self_anchor_voice and voice_block is None:
+            if si == 0 and self_anchor_voice and not voice_blocks:
                 # THE self-anchor: shot 1's own rendered voice becomes the
                 # reference for every later shot. The bank carries voice as
                 # part of a video_audio slot that keeps rolling; this pins
@@ -5863,8 +5999,10 @@ class H3MultishotMemorySampler:
                 if _aw.shape[-1] > _alim:
                     _aw = _aw[..., :_alim]
                 _avz = audio_vae.encode(_aw.movedim(1, -1))
-                voice_block = {"kind": "audio", "ref_audio_t": _avz.shape[-1],
-                               "audio_latent": _avz}
+                voice_blocks.append({"kind": "audio",
+                                     "ref_audio_t": _avz.shape[-1],
+                                     "audio_latent": _avz})
+                voice_subjects.append(1)
                 print("[H3Memory] self-anchor: shot 1's voice (%.1fs) is now "
                       "<Audio 1> for the remaining %d shot(s)."
                       % (_aw.shape[-1] / sr, n - 1), flush=True)
