@@ -65,7 +65,10 @@ git clone https://github.com/jlucasmcrell/ComfyUI-H3-Multishot
 
 Or search **H3 Multishot** in ComfyUI-Manager - the pack is on the Comfy
 Registry as `comfyui-h3-multishot`. *Install via Git URL* also works.
-Requires **ComfyUI v0.30.0+** (native MiniMax-H3 support).
+Requires **ComfyUI v0.30.0+** (native MiniMax-H3 support). **v0.34+ is
+recommended**: it places interior keyframe anchors natively. On an older core
+those in-between anchors need the ComfyUI-H3-Motion-Context pack (already
+required for `continuity=context_pin`); first/last anchors work everywhere.
 
 **2. Put the models in place**
 
@@ -121,6 +124,34 @@ one-widget change or node deletion for each. Highlights: no RES4LYF → set
 no Motion-Context → `continuity=first_frame`.
 
 ---
+
+## 2.7.1 - installable from Manager again, and context_pin fixed on 0.34
+
+- **2.7.0 was flagged by the Comfy Registry and never served.** Their security
+  scan now rejects dynamic code execution in a published node, and
+  `h3_interior_patch` recompiled a rewritten copy of `PackedLayout.__init__`
+  to lift stock's first/last keyframe restriction. That mechanism is gone.
+  The module now only *detects* where interior anchors come from: ComfyUI
+  0.34+ places them natively, and on older cores the
+  ComfyUI-H3-Motion-Context pack owns that job (it is already required for
+  `continuity=context_pin`). If neither applies you get a message naming both
+  remedies instead of a silent loss. First/last anchors are stock behaviour
+  and were never affected. Nothing changes on 0.34, where the old path was
+  already dead code.
+- **context_pin: pinned blocks were collapsing onto frame 0 on ComfyUI 0.34.**
+  Motion-Context's layout patch does two jobs - place interior video anchors,
+  and translate the marked audio reference onto the target timeline. 0.34 made
+  the first native, so 2.7.0's compatibility work stood the patch down
+  entirely; but the node still emitted `resolved_frame_index=0` with the true
+  position under a private key, and with the patch gone nothing applied it.
+  Every pinned block landed on frame 0 while the console still reported them
+  spread across the window. Joins lost their phase lock and the audio
+  reference lost its end-alignment - quietly, with no error. **This fix lives
+  in ComfyUI-H3-Motion-Context, not in this pack**: update that pack (a diff
+  is attached to this release). Measured before/after on a 7-block pin:
+  1 distinct position out of 7, versus 7 of 7 after.
+- The 2.7.0 line "ComfyUI 0.34 ready" was true of this pack's own layout patch
+  and wrong about `context_pin`. This entry is the correction.
 
 ## 2.7.0 - per-subject voices, flf_chain fixed, chain leveller, ComfyUI 0.34
 
