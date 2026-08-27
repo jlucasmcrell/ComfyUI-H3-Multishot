@@ -149,6 +149,11 @@ no Motion-Context → `continuity=first_frame`.
 - **Memory-sampler levers** — in-loop latent x2/x1.5 upscale,
   `refresh_renoise` (variance-matched splice), `pin_noise_ramp` (graded seam
   floor), `auto_chunk_ffn` (sol-attn chunking when VRAM is tight).
+- **Schedule-split sampler (experimental)** — `sampler_2` + `sampler_2_at`
+  on the memory sampler (appended last, `(off)` by default): one continuous
+  sigma schedule, a second solver for the tail slice — e.g. euler for
+  structure, then res_2s for the low-sigma refinement. Off = identical to
+  before; being A/B'd, treat as experimental.
 - **Motion-Context 0.4.0: not yet.** MC 0.4.0 (released 2026-08-26) moved its
   pinned audio from a patched reference block to an audio keyframe, and that
   does not yet compose with this sampler - context_pin fails at the shot-2
