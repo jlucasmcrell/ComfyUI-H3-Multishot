@@ -4429,15 +4429,27 @@ class H3MultishotMemorySampler:
                 if _mc_ff is not None:
                     import sys as _sys_ff
                     _mod_ff = _sys_ff.modules.get(_mc_ff.__module__)
-                    _probe = getattr(_mod_ff, "_ensure_layout_patch", None)
+                    # 0.3.1 exposes _ensure_layout_patch (installs + self-tests
+                    # its runtime patch); 0.4.0 replaced it with
+                    # _ensure_layout_ok (verify-only - and it RAISES on cores
+                    # older than 0.34, which 0.4.0 requires). Probing either
+                    # name keeps the failure HERE, before any sampling: a user
+                    # on core 0.33 who took the 0.4.0 update used to burn ten
+                    # minutes of shot 1 before Motion-Context refused at the
+                    # shot-2 boundary (user-reported, 2026-08-27).
+                    _probe = (getattr(_mod_ff, "_ensure_layout_patch", None)
+                              or getattr(_mod_ff, "_ensure_layout_ok", None))
                     if callable(_probe):
                         _probe()
             except Exception as _ff_e:
                 raise RuntimeError(
                     "context_pin cannot run in this ComfyUI: the Motion-"
-                    "Context layout patch is blocked (%s). Usually another "
-                    "pack (e.g. a community SolAttn fork) already patched "
-                    "H3's PackedLayout - disable one of the two packs and "
+                    "Context pre-flight failed (%s). Two usual causes: "
+                    "Motion-Context 0.4.0 on a ComfyUI older than 0.34.0 "
+                    "(0.4.0 requires 0.34 - install Motion-Context 0.3.1 "
+                    "there, or update ComfyUI), or another pack (e.g. a "
+                    "community SolAttn fork) already patched H3's "
+                    "PackedLayout - disable one of the two packs and "
                     "restart, or switch continuity to 'cut'. Failing NOW "
                     "instead of after shot 1 renders." % _ff_e)
         if float(x0_texture_clamp or 0.0) > 0.0:
