@@ -114,6 +114,33 @@ def ensure_interior_keyframes(verbose=True):
         return _state["ok"], _state["msg"]
     _state["done"] = True
 
+    # ComfyUI 0.34.0 honours a non-zero resolved_frame_index by itself, so
+    # there is nothing left for this module to add. Probing the engine beats
+    # assuming either way: on an older core the probe fails and the patch
+    # installs as before.
+    try:
+        import torch
+        import comfy.ldm.minimax.model as _mm
+        _native = True
+        for _idx in (0, 17):
+            _lay = _mm.PackedLayout(7, 7, 22, 38, 16,
+                                    keyframes=[{"resolved_frame_index": _idx,
+                                                "latent": torch.zeros(1, 4, 1, 22, 38)}])
+            _c = [(a, b) for a, b, k in _lay.segments if k == "cond"]
+            if not _c or abs(float(_lay.position_ids[_c[0][0], 0])
+                             - (7.0 + _mm.FRAME_RESCALE * _idx)) > 1e-6:
+                _native = False
+                break
+    except Exception:
+        _native = False
+    if _native:
+        _state["ok"] = True
+        _state["msg"] = ("standing down: this ComfyUI places interior keyframe "
+                         "anchors natively, so no layout patch is required.")
+        if verbose:
+            logging.info("[H3Keyframes] " + _state["msg"])
+        return True, _state["msg"]
+
     _mc = _motion_context_present()
     if _mc:
         _state["ok"] = True

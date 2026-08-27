@@ -970,7 +970,7 @@ class H3LTXTakeControls:
                 "cost tokens; past what the card fits, auto steps the upscale down "
                 "(x2 -> x1.5 -> none) and prints which. 8 s x2 / ~14 s x1.5 at "
                 "960x544 is the 24 GB comfort zone."}),
-            "beat_seconds": ("FLOAT", {"default": 8.0, "min": 3.0, "max": 15.0, "step": 0.5,
+            "beat_seconds": ("FLOAT", {"default": 8.0, "min": 3.0, "max": 20.0, "step": 0.5,
                 "tooltip": "How long each written sentence/beat should be; the writer "
                 "gets take_seconds / beat_seconds beats to write."}),
             "upscale": (["auto", "x2", "x1.5", "none"], {"default": "auto",

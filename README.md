@@ -122,6 +122,43 @@ no Motion-Context → `continuity=first_frame`.
 
 ---
 
+## 2.7.0 - per-subject voices, flf_chain fixed, chain leveller, ComfyUI 0.34
+
+- **Per-subject voice refs** — `voice_ref_2` / `voice_ref_3` on both samplers
+  (appended last; saved graphs load unchanged). Each subject keeps their own
+  voice across a chained scene instead of blending into one narrator. Verified
+  blind across a full chain: no cross-speaker bleed. This was the most-asked
+  request on the model page.
+- **flf_chain fix — boundary plates no longer haunted by PLATE0.** With
+  `continuity=flf_chain` the memory bank still ran, and its default
+  (`bank_pinned=1`) pinned a reference clip of shot 1 into every later shot.
+  Shot 1 opens on boundary plate 0, and in flf mode those bank clips are not
+  named in the prompt — so the model treated shot-1 footage as content and
+  mixed PLATE0 back in from shot 2 onward (user-reported: "it picks up PLATE0
+  again"). The bank now stands down automatically in flf_chain, with a console
+  line saying so. Plates alone carry the continuity in this mode, which is the
+  whole point of the mode.
+- **H3ChainNormalize** — post-chain texture and colour leveller. Addresses the
+  2.6.0 known limit (the slow sharpening ratchet across long chains): run it
+  after the chain and the take is levelled end to end.
+- **refresh_pin splice alignment** — the re-encoded tail was landing 1-2
+  latent frames early, so joins read as cuts and audio slipped. The splice is
+  now correlation-aligned to the actual latent overlap.
+- **x0 texture clamp dial** — `x0_clamp_window` (appended last), dose capped
+  at 0.30. The eye-approved anti-dulling setting is the default.
+- **Memory-sampler levers** — in-loop latent x2/x1.5 upscale,
+  `refresh_renoise` (variance-matched splice), `pin_noise_ramp` (graded seam
+  floor), `auto_chunk_ffn` (sol-attn chunking when VRAM is tight).
+- **ComfyUI 0.34 ready** — 0.34 places interior keyframe anchors natively, so
+  the pack's layout patch now probes the running core and stands down when it
+  is not needed. Older cores keep the patch exactly as before.
+- **Engine-aware writer** — the bundled JoyEcho writer now carries separate H3
+  and LTX system prompts for every mode, selected by a new `engine` widget
+  (appended last). H3 prompts use the `<d>[English] ...</d>` spoken-line spec;
+  LTX prompts keep straight-double-quote dialogue for the TTS extractor.
+- Widget range: `beat_seconds` max 15 -> 20 on H3LTXTakeControls.
+- Fine-tooth fix batch: small correctness fixes across both samplers.
+
 ## 2.6.3 - one number for window length, and remote encoding that fails fast
 
 ### frames_per_shot now rules extend mode too

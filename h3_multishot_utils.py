@@ -4632,9 +4632,23 @@ class H3MultishotMemorySampler:
                           "reference tokens on EVERY step. Run it through "
                           "H3ReferenceVideo to trim." % _rv_n, flush=True)
                 _extra_clips.append((reference_video, _rv_a))
+            # flf_chain joins each pair of shots on a SHARED boundary still;
+            # the bank has nothing to add and much to break there. Its clips
+            # attach as minimax_refs, but flf_chain's tokenize path (vision
+            # images) never numbers them into the prompt - so the model gets
+            # unexplained footage of earlier shots and blends it in. With the
+            # default bank_pinned=1 that footage is shot 1, which OPENS on
+            # boundary plate 0: the exact "PLATE0 comes back in shot 2" bleed
+            # a user reported on 2026-08-27. Plates carry the continuity in
+            # this mode; the bank stays out of it.
+            if continuity == "flf_chain" and si == 1 and bank.frames():
+                print("[H3Memory] flf_chain: memory bank disabled for this "
+                      "chain (boundary plates carry continuity; bank clips "
+                      "would bleed earlier shots into later ones)", flush=True)
             for clip_frames, clip_audio in (
                     _extra_clips
-                    + ([] if continuity == "first_frame" else bank.frames())):
+                    + ([] if continuity in ("first_frame", "flf_chain")
+                       else bank.frames())):
                 vh, vw = int(clip_frames.shape[1]), int(clip_frames.shape[2])
                 cw, ch = mmh3.adapt_canvas(vw, vh)
                 if vw * vh < cw * ch:
