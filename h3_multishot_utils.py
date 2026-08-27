@@ -3968,6 +3968,25 @@ class H3MultishotMemorySampler:
                            "after - and is gentler than raising the dose "
                            "past the waxy-shimmer threshold. Appended widget: "
                            "saved canvases without it keep the 0.30 default."}),
+            # 2.7.0 schedule-split sampler swap (operator ask, 2026-08-27).
+            # One continuous sigma schedule, two solvers: sampler_name runs
+            # the first slice, sampler_2 the rest, split at sampler_2_at.
+            # Community two-pass wisdom puts res_2s on the refinement pass;
+            # this is that idea expressed on the live single-pass path (the
+            # in-loop two-pass has been hardcoded OFF since 2.1.3). Appended
+            # last; "(off)" keeps today's single-sampler behavior exactly.
+            "sampler_2": ("STRING", {
+                "default": "(off)",
+                "tooltip": "Second solver for the TAIL of the schedule. Name "
+                           "a sampler (e.g. res_2s) to switch to it at "
+                           "sampler_2_at; '(off)' = one sampler throughout. "
+                           "Typical use: euler for structure, res_2s for the "
+                           "low-sigma refinement slice."}),
+            "sampler_2_at": ("FLOAT", {
+                "default": 0.40, "min": 0.05, "max": 0.95, "step": 0.05,
+                "tooltip": "sampler_2 only: fraction of the schedule where "
+                           "the swap happens. 0.40 = first 40% of steps on "
+                           "sampler_name, the remaining 60% on sampler_2."}),
             # 2.6.6 per-character voices (Civitai: sebboraketti22295,
             # snake88). AUDIO sockets take no widget slot, so appending them
             # here cannot shift widgets_values in saved canvases.
@@ -4062,6 +4081,7 @@ class H3MultishotMemorySampler:
             pin_noise_audio=False, audio_tone_control=False,
             x0_texture_clamp=0.0, x0_clamp_window=0.30, refresh_renoise=False,
             pin_noise_ramp=False, auto_chunk_ffn=False,
+            sampler_2="(off)", sampler_2_at=0.40,
             voice_ref_2=None, voice_ref_3=None,
             prompt=None, extra_pnginfo=None):
         # Keep the hidden PROMPT before anything can shadow it: the shot loop
@@ -4113,6 +4133,29 @@ class H3MultishotMemorySampler:
             sigmas = ncs.BasicScheduler().get_sigmas(model, scheduler,
                                                      steps, 1.0)[0]
         sampler = ncs.KSamplerSelect().get_sampler(sampler_name)[0]
+        # 2.7.0 schedule split: ONE continuous schedule, a second solver for
+        # the tail slice. sigma index k is a step boundary, so sigmas[:k+1]
+        # then sigmas[k:] overlap on exactly one sigma and the second call
+        # continues bit-exactly from the first (DisableNoise, same pattern
+        # the retired in-loop two-pass used).
+        _s2_name = str(sampler_2 or "").strip()
+        _s2_obj = _s2_k = None
+        if _s2_name and _s2_name.lower() not in ("(off)", "off", "none"):
+            try:
+                _s2_obj = ncs.KSamplerSelect().get_sampler(_s2_name)[0]
+            except Exception as _e:
+                raise RuntimeError(
+                    "sampler_2 '%s' is not a sampler this ComfyUI knows "
+                    "(%r). Use '(off)' or a registered sampler name (e.g. "
+                    "res_2s needs the RES4LYF pack installed)."
+                    % (_s2_name, _e))
+            _s2_k = max(1, min(len(sigmas) - 2,
+                               int(round(float(sampler_2_at)
+                                         * (len(sigmas) - 1)))))
+            print("[H3Memory] schedule split: %s for steps 1-%d, %s for "
+                  "steps %d-%d (swap at sigma %.3f)"
+                  % (sampler_name, _s2_k, _s2_name, _s2_k + 1,
+                     len(sigmas) - 1, float(sigmas[_s2_k])), flush=True)
 
         # --- voice anchors: encode ONCE, ride in every shot's conditioning ---
         # The bank already carries voice from shot 2 on, but shot 1 renders
@@ -5601,6 +5644,12 @@ class H3MultishotMemorySampler:
                     out, _d = ncs.SamplerCustomAdvanced().sample(
                         ncs.DisableNoise().get_noise()[0], guider_hi,
                         sampler, _tp_sig_lo, up)
+                elif _s2_obj is not None:
+                    out1, _d1 = ncs.SamplerCustomAdvanced().sample(
+                        noise, guider, sampler, sigmas[:_s2_k + 1], latent)
+                    out, _d = ncs.SamplerCustomAdvanced().sample(
+                        ncs.DisableNoise().get_noise()[0], guider,
+                        _s2_obj, sigmas[_s2_k:], out1)
                 else:
                     out, _d = ncs.SamplerCustomAdvanced().sample(
                         noise, guider, sampler, sigmas, latent)
