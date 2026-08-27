@@ -90,7 +90,8 @@ def _txt_roots() -> list[Path]:
         rp = Path(r)
         k = str(rp).lower()
         if k not in seen and rp.is_dir():
-            seen.add(k); out.append(rp)
+            seen.add(k)
+            out.append(rp)
     return out
 
 

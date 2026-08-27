@@ -217,7 +217,8 @@ def main() -> int:
         ff = _find(FFMPEG_CANDIDATES)
         fp = _find(FFPROBE_CANDIDATES)
         if not ff or not fp:
-            say("FATAL: ffmpeg/ffprobe not found"); return 1
+            say("FATAL: ffmpeg/ffprobe not found")
+            return 1
 
         # Select ONLY the current run's shots. The shot counter restarts at
         # 000 every run and leftovers from longer previous runs linger at
@@ -229,7 +230,8 @@ def main() -> int:
         # or the first file OLDER than shot_000 (60s grace).
         first = os.path.join(a.shots_dir, "shot_000.mp4")
         if not os.path.isfile(first):
-            say(f"FATAL: {first} missing"); return 1
+            say(f"FATAL: {first} missing")
+            return 1
         t_anchor = os.path.getmtime(first) - 60
         shots, i = [], 0
         while True:
@@ -261,7 +263,8 @@ def main() -> int:
             say(f"no same-run transition sidecar; defaults: {a.transition}, "
                 f"{a.glitch_frames} frames, intensity {a.glitch_intensity}")
         if not shots:
-            say(f"FATAL: no current-run shot masters in {a.shots_dir}"); return 1
+            say(f"FATAL: no current-run shot masters in {a.shots_dir}")
+            return 1
 
         # HIRES-AWARE ROUTE (2026-07-23): if this run's in-process hires
         # refine produced a shot_hires_XXX master for EVERY shot, those ARE
@@ -343,7 +346,8 @@ def main() -> int:
                 t0 = time.time()
                 while True:
                     if time.time() - t0 > 3600:
-                        say(f"FATAL: shot {i} upscale timed out"); return 1
+                        say(f"FATAL: shot {i} upscale timed out")
+                        return 1
                     h = api(a.comfy, f"/history/{pid}")
                     if pid in h:
                         st = h[pid].get("status", {})
@@ -356,7 +360,8 @@ def main() -> int:
                 new = sorted(set(glob.glob(os.path.join(a.upscaled_dir, "upscaled_*.mp4"))) - before,
                              key=os.path.getmtime)
                 if not new:
-                    say(f"FATAL: shot {i} produced no output"); return 1
+                    say(f"FATAL: shot {i} produced no output")
+                    return 1
                 ups.append(new[-1])
                 say(f"shot {i}: done in {time.time()-t0:.0f}s -> {os.path.basename(new[-1])}")
 
@@ -405,7 +410,8 @@ def main() -> int:
             subprocess.run([ff, "-y", "-v", "error", "-i", wv, "-af", "apad",
                             "-t", vdur_i, "-c:a", "pcm_f32le", wpad], check=True)
             alist.append("file '" + wpad.replace(os.sep, "/") + "'")
-        vtxt = os.path.join(snap, "v.txt"); open(vtxt, "w").write("\n".join(vlist))
+        vtxt = os.path.join(snap, "v.txt")
+        open(vtxt, "w").write("\n".join(vlist))
         allv = os.path.join(snap, "allv.mp4")
         subprocess.run([ff, "-y", "-v", "error", "-f", "concat", "-safe", "0",
                         "-i", vtxt, "-c", "copy", "-an", allv], check=True)
@@ -441,7 +447,8 @@ def main() -> int:
 
         final = os.path.join(a.shots_dir, f"{a.name}_{stamp}_MASTER.mp4")
         if alist:
-            atxt = os.path.join(snap, "a.txt"); open(atxt, "w").write("\n".join(alist))
+            atxt = os.path.join(snap, "a.txt")
+            open(atxt, "w").write("\n".join(alist))
             alla = os.path.join(snap, "alla.wav")
             subprocess.run([ff, "-y", "-v", "error", "-f", "concat", "-safe", "0",
                             "-i", atxt, "-c", "copy", alla], check=True)

@@ -125,6 +125,20 @@ no Motion-Context → `continuity=first_frame`.
 
 ---
 
+## 2.7.2 - the actual reason Manager could not serve 2.7.0 or 2.7.1
+
+- **Multi-statement lines removed (E702).** 2.7.1 dropped the `exec` that
+  2.7.0 was flagged for, and the Registry flagged it anyway. Reading the
+  publish log rather than guessing: the ONLY rule its scan reported was E702,
+  50 multiple-statements-on-one-line, in 8 files. Both prior versions tripped
+  it; 2.6.5 shipped the same style and predates the enforcement. All 33
+  affected lines are now split, verified by comparing each file's AST before
+  and after with positions stripped - the trees are identical, so the change
+  cannot alter behaviour. `ruff --select E702,S102` is clean.
+- No functional change of any kind in this release. If you are on 2.7.1 from
+  GitHub or HuggingFace, you already have every fix; this exists purely so
+  ComfyUI-Manager will serve it.
+
 ## 2.7.1 - installable from Manager again, and context_pin fixed on 0.34
 
 - **2.7.0 was flagged by the Comfy Registry and never served.** Their security

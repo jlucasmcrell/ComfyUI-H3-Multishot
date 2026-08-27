@@ -214,7 +214,8 @@ class _SpatialTiledDecoder(torch.nn.Module):
         scale = None
         for y0 in ys:
             for x0 in xs:
-                th = min(t, H - y0); tw = min(t, W - x0)
+                th = min(t, H - y0)
+                tw = min(t, W - x0)
                 o = self._dec(latent[..., y0:y0 + th, x0:x0 + tw], *a, **k)
                 if not torch.is_tensor(o):           # unexpected API: bail to full decode
                     return self._dec(latent, *a, **k)

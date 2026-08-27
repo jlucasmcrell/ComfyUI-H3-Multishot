@@ -922,7 +922,8 @@ class RiftCast_Packer:
             apath = os.path.join(td, "voice", "anchor.mp4")
             out = av.open(apath, "w")
             vs = out.add_stream("h264", rate=fps)
-            vs.width = int(frames.shape[2]); vs.height = int(frames.shape[1])
+            vs.width = int(frames.shape[2])
+            vs.height = int(frames.shape[1])
             vs.pix_fmt = "yuv420p"
             vs.options = {"crf": "18"}
             asr = out.add_stream("aac", rate=sr)

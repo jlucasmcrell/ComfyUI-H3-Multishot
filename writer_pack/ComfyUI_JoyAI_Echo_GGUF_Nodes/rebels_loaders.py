@@ -199,7 +199,8 @@ try:
         _dq = os.path.join(_cn_dir, _cand, "dequant.py")
         if os.path.isfile(_dq):
             _spec = _ilu.spec_from_file_location("rebels_city96_dequant", _dq)
-            _mod = _ilu.module_from_spec(_spec); _spec.loader.exec_module(_mod)
+            _mod = _ilu.module_from_spec(_spec)
+            _spec.loader.exec_module(_mod)
             _CITY_DEQUANT = getattr(_mod, "dequantize", None)
             if _CITY_DEQUANT:
                 print(f"[Rebels JE] GPU dequant kernels loaded from {_cand}/dequant.py", flush=True)
@@ -211,7 +212,8 @@ except Exception as _e:
 class GGUFLinear(nn.Module):
     def __init__(self, entry, bias=None, compute_dtype=torch.bfloat16):
         super().__init__()
-        self.qtype_value = int(entry["qtype"]); self.weight_shape = tuple(entry["shape"])
+        self.qtype_value = int(entry["qtype"])
+        self.weight_shape = tuple(entry["shape"])
         # The packed weight is kept as a PLAIN attribute (not a registered buffer):
         #  - it stays a numpy view into the memory-mapped GGUF file, so it costs
         #    ~zero resident RAM (the .copy() that duplicated the whole DiT in RAM
@@ -255,13 +257,18 @@ class GGUFLinear(nn.Module):
         return F.linear(x, w, self.bias.to(x.dtype) if self.bias is not None else None)
 
 def _set_sub(root, dotted, new):
-    *parents, leaf = dotted.split("."); p = root
+    *parents, leaf = dotted.split(".")
+    p = root
     for a in parents: p = getattr(p, a)
     setattr(p, leaf, new)
 
 class _GGUFDiTLoader(SafetensorsModelStateDictLoader):
     def __init__(self, config, entries, consumed, dtype):
-        super().__init__(); self._cfg = config; self._e = entries; self._consumed = consumed; self._dt = dtype
+        super().__init__()
+        self._cfg = config
+        self._e = entries
+        self._consumed = consumed
+        self._dt = dtype
     def metadata(self, path): return self._cfg
     def load(self, paths, sd_ops=None, device=None):
         sd, size, n = {}, 0, 0
@@ -417,7 +424,8 @@ def _dit_module_ops(entries, consumed, compute_dtype):
 # ---------------------------------------------------------------- gemma fp8
 class Fp8Linear(nn.Module):
     def __init__(self, qweight_u8, shape, scale, bias=None, compute_dtype=torch.bfloat16):
-        super().__init__(); self.weight_shape = tuple(shape)
+        super().__init__()
+        self.weight_shape = tuple(shape)
         self.register_buffer("qweight", qweight_u8)
         self.register_buffer("scale_weight", torch.tensor(float(scale), dtype=torch.float32))
         self.bias = nn.Parameter(bias.to(compute_dtype), requires_grad=False) if bias is not None else None
@@ -584,7 +592,10 @@ def _cache_put(kind, key, value):
     return value
 
 class RebelsJE_Config:
-    CATEGORY = CAT; RETURN_TYPES = ("JOYECHO_CONFIG",); RETURN_NAMES = ("config",); FUNCTION = "run"
+    CATEGORY = CAT
+    RETURN_TYPES = ("JOYECHO_CONFIG",)
+    RETURN_NAMES = ("config",)
+    FUNCTION = "run"
     @classmethod
     def INPUT_TYPES(cls):
         return {"required": {"config_source": ("STRING", {"default": _LOADER_CFG})}}
@@ -652,7 +663,10 @@ def _materialize_meta(root, entries, consumed, dtype, strict=True, skip_substrin
 
 
 class RebelsJE_DiTLoader:
-    CATEGORY = CAT; RETURN_TYPES = ("JOYECHO_GENERATOR",); RETURN_NAMES = ("generator",); FUNCTION = "run"
+    CATEGORY = CAT
+    RETURN_TYPES = ("JOYECHO_GENERATOR",)
+    RETURN_NAMES = ("generator",)
+    FUNCTION = "run"
     @classmethod
     def INPUT_TYPES(cls):
         return {"required": {
@@ -666,7 +680,8 @@ class RebelsJE_DiTLoader:
             return cached
         dtype = torch.bfloat16
         _SWAP_MAP.clear()  # ids are only valid for THIS build
-        entries = _gguf_entries(dit_gguf); consumed = set()
+        entries = _gguf_entries(dit_gguf)
+        consumed = set()
         builder = Builder(
             model_class_configurator=LTXModelConfigurator,
             model_path=dit_gguf,
@@ -687,7 +702,10 @@ class RebelsJE_DiTLoader:
         return _cache_put("dit", key, (gen,))
 
 class RebelsJE_TextEncoder:
-    CATEGORY = CAT; RETURN_TYPES = ("JOYECHO_TEXTENC",); RETURN_NAMES = ("text_encoder",); FUNCTION = "run"
+    CATEGORY = CAT
+    RETURN_TYPES = ("JOYECHO_TEXTENC",)
+    RETURN_NAMES = ("text_encoder",)
+    FUNCTION = "run"
     @classmethod
     def INPUT_TYPES(cls):
         return {"required": {
@@ -706,7 +724,8 @@ class RebelsJE_TextEncoder:
         if cached is not None:
             return cached
 
-        dtype = torch.bfloat16; dev = torch.device("cpu") if low_vram else _dev()
+        dtype = torch.bfloat16
+        dev = torch.device("cpu") if low_vram else _dev()
         
         # --- SINGLE FILE INTAKE PATCH START ---
         gemma_path_str = str(gemma_path)
@@ -932,7 +951,10 @@ class RebelsJE_TextEncoder:
         return _cache_put("text_encoder", key, (wrapper,))
 
 class RebelsJE_VAELoader:
-    CATEGORY = CAT; RETURN_TYPES = ("JOYECHO_VVAE", "JOYECHO_AVAE", "INT"); RETURN_NAMES = ("video_vae", "audio_vae", "audio_sample_rate"); FUNCTION = "run"
+    CATEGORY = CAT
+    RETURN_TYPES = ("JOYECHO_VVAE", "JOYECHO_AVAE", "INT")
+    RETURN_NAMES = ("video_vae", "audio_vae", "audio_sample_rate")
+    FUNCTION = "run"
     @classmethod
     def INPUT_TYPES(cls):
         return {"required": {
@@ -958,12 +980,16 @@ class RebelsJE_VAELoader:
         a_enc = self._build(config, AudioEncoderConfigurator, AUDIO_VAE_ENCODER_COMFY_KEYS_FILTER, audio_vae_path) if with_encoders else None
         video_vae = VideoVAEWrapper(encoder=v_enc, decoder=v_dec, device=_dev(), dtype=dtype)
         audio_vae = AudioVAEWrapper(encoder=a_enc, decoder=a_dec, vocoder=voc, device=_dev(), dtype=dtype)
-        video_vae.eval(); audio_vae.eval()
+        video_vae.eval()
+        audio_vae.eval()
         sr = audio_vae.get_output_sample_rate() or 24000
         return _cache_put("vae", key, (video_vae, audio_vae, sr))
 
 class RebelsJE_Assemble:
-    CATEGORY = CAT; RETURN_TYPES = ("JOYECHO_MODEL",); RETURN_NAMES = ("model",); FUNCTION = "run"
+    CATEGORY = CAT
+    RETURN_TYPES = ("JOYECHO_MODEL",)
+    RETURN_NAMES = ("model",)
+    FUNCTION = "run"
     @classmethod
     def INPUT_TYPES(cls):
         return {"required": {"generator": ("JOYECHO_GENERATOR",), "text_encoder": ("JOYECHO_TEXTENC",),

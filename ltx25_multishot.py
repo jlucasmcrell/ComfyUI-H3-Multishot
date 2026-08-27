@@ -156,10 +156,12 @@ class LTX25MultishotSampler:
     def _pin(av, tail, mode):
         """Pin the previous shot's tail (video+audio raw latents) at the head of `av` (noise mask 0)."""
         v, a = av["samples"].unbind()
-        v = v.clone(); a = a.clone()
+        v = v.clone()
+        a = a.clone()
         if "noise_mask" in av:
             mv, ma = av["noise_mask"].unbind()
-            mv = mv.clone(); ma = ma.clone()
+            mv = mv.clone()
+            ma = ma.clone()
         else:
             mv, ma = torch.ones_like(v), torch.ones_like(a)
         pv, pa = tail

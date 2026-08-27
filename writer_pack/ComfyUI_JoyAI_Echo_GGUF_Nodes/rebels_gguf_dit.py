@@ -45,7 +45,8 @@ def _full_config(src):
 
 # ---- gguf ----
 def _gguf_entries(path):
-    r = GGUFReader(path); out = {}
+    r = GGUFReader(path)
+    out = {}
     for t in r.tensors:
         out[t.name] = {"data": np.asarray(t.data), "qtype": t.tensor_type,
                        "shape": tuple(int(d) for d in reversed(t.shape))}
@@ -58,7 +59,8 @@ def _dequant(entry, dtype):
 class GGUFLinear(nn.Module):
     def __init__(self, entry, bias=None, compute_dtype=torch.bfloat16):
         super().__init__()
-        self.qtype_value = int(entry["qtype"]); self.weight_shape = tuple(entry["shape"])
+        self.qtype_value = int(entry["qtype"])
+        self.weight_shape = tuple(entry["shape"])
         self.register_buffer("qweight", torch.from_numpy(entry["data"].copy()))
         self.bias = nn.Parameter(bias.to(compute_dtype), requires_grad=False) if bias is not None else None
     def forward(self, x):
@@ -68,7 +70,8 @@ class GGUFLinear(nn.Module):
         return F.linear(x, w, self.bias.to(x.dtype) if self.bias is not None else None)
 
 def _set_sub(root, dotted, new):
-    *parents, leaf = dotted.split("."); p = root
+    *parents, leaf = dotted.split(".")
+    p = root
     for a in parents: p = getattr(p, a)
     setattr(p, leaf, new)
 
@@ -76,13 +79,19 @@ class _GGUFDiTLoader(SafetensorsModelStateDictLoader):
     """metadata()->config; load()->only NON-Linear tensors (dequant, small).
     Big Linear weights stay quantized in GGUFLinear (swapped via module_ops)."""
     def __init__(self, config, entries, consumed, dtype):
-        super().__init__(); self._cfg = config; self._e = entries; self._consumed = consumed; self._dt = dtype
+        super().__init__()
+        self._cfg = config
+        self._e = entries
+        self._consumed = consumed
+        self._dt = dtype
     def metadata(self, path): return self._cfg
     def load(self, paths, sd_ops=None, device=None):
         sd, size = {}, 0
         for k, e in self._e.items():
             if k in self._consumed: continue
-            t = _dequant(e, self._dt); sd[k] = t; size += t.numel() * t.element_size()
+            t = _dequant(e, self._dt)
+            sd[k] = t
+            size += t.numel() * t.element_size()
         return StateDict(sd=sd, device=device or torch.device("cpu"), size=size, dtype=self._dt)
 
 def _dit_module_ops(entries, consumed, compute_dtype):
@@ -131,7 +140,8 @@ class RebelsJE_GGUF_DiT:
             raise FileNotFoundError(f"GGUF not found: {unet_name}")
         dtype = torch.bfloat16
         config = _full_config(config_source)
-        entries = _gguf_entries(path); consumed = set()
+        entries = _gguf_entries(path)
+        consumed = set()
         builder = Builder(
             model_class_configurator=LTXModelConfigurator,
             model_path=path,

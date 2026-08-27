@@ -148,7 +148,8 @@ def _mn_normalize(parts, mode, med=9):
     # 12-shot 1088x1920 chain, and it used to be built three times over. Every
     # number below this point is one-dimensional.
     luma = torch.cat([p.mean(dim=(1, 2, 3)) for p in parts])
-    k = max(3, min(int(med) | 1, (n // 2) * 2 - 1)); pad = k // 2
+    k = max(3, min(int(med) | 1, (n // 2) * 2 - 1))
+    pad = k // 2
 
     def _med(v):
         return torch.nn.functional.pad(
@@ -5210,7 +5211,8 @@ class H3MultishotMemorySampler:
                             _pin_src = dict(_pin_src)
                             if _nested:
                                 import comfy.nested_tensor as _nt3
-                                _cc = list(_zr.unbind()); _cc[0] = _newv
+                                _cc = list(_zr.unbind())
+                                _cc[0] = _newv
                                 _pin_src["samples"] = _nt3.NestedTensor(_cc)
                             else:
                                 _pin_src["samples"] = _newv
