@@ -149,6 +149,12 @@ no Motion-Context → `continuity=first_frame`.
 - **Memory-sampler levers** — in-loop latent x2/x1.5 upscale,
   `refresh_renoise` (variance-matched splice), `pin_noise_ramp` (graded seam
   floor), `auto_chunk_ffn` (sol-attn chunking when VRAM is tight).
+- **Motion-Context 0.4.0: not yet.** MC 0.4.0 (released 2026-08-26) moved its
+  pinned audio from a patched reference block to an audio keyframe, and that
+  does not yet compose with this sampler - context_pin fails at the shot-2
+  boundary with a shape mismatch. The pre-flight now refuses 0.4.0 by name
+  BEFORE any sampling and tells you to stay on 0.3.1; 0.4.0 support is the
+  first item for the next update.
 - **ComfyUI 0.34 ready** — 0.34 places interior keyframe anchors natively, so
   the pack's layout patch now probes the running core and stands down when it
   is not needed. Older cores keep the patch exactly as before.
