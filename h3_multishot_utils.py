@@ -4441,6 +4441,22 @@ class H3MultishotMemorySampler:
                               or getattr(_mod_ff, "_ensure_layout_ok", None))
                     if callable(_probe):
                         _probe()
+                    # Motion-Context 0.4.0 (2026-08-26) passes its own checks
+                    # but is NOT yet compatible with this sampler: it moved
+                    # the pinned audio from a patched reference block to an
+                    # audio keyframe, and the two row accountings disagree -
+                    # reproduced as "shape mismatch [882, 32] vs [956, 32]"
+                    # at the shot-2 boundary, after shot 1 fully rendered.
+                    # Refuse HERE, by name, until the composition fix lands.
+                    if (getattr(_mod_ff, "_ensure_layout_patch", None) is None
+                            and getattr(_mod_ff, "_ensure_layout_ok", None)
+                            is not None):
+                        raise RuntimeError(
+                            "Motion-Context 0.4.0 detected. Its new pinned-"
+                            "audio mechanism is not yet compatible with this "
+                            "sampler's context_pin (fails at the shot-2 "
+                            "boundary). Install Motion-Context 0.3.1 for now "
+                            "- 0.4.0 support is planned for the next update.")
             except Exception as _ff_e:
                 raise RuntimeError(
                     "context_pin cannot run in this ComfyUI: the Motion-"
