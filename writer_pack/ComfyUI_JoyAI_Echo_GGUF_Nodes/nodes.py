@@ -14,6 +14,7 @@ from __future__ import annotations
 import gc
 import json
 import os
+import re
 from pathlib import Path
 from typing import Any
 
@@ -3592,12 +3593,30 @@ if _long_sp_path.exists():
     _DEFAULT_LONG_STORY_SYSTEM_PROMPT = _long_sp_path.read_text(encoding="utf-8").strip()
 
 
-def _load_system_prompt(mode: str) -> str:
-    """Load the full system prompt from the bundled markdown file."""
-    if "long" in mode:
-        fp = _PROMPTS_DIR / "long_story_writer_system_prompt.md"
-    else:
-        fp = _PROMPTS_DIR / "short_story_writer_system_prompt.md"
+def _load_system_prompt(mode: str, engine: str = "auto") -> str:
+    """Load the full system prompt from the bundled markdown file.
+
+    ENGINE matters because the two video models disagree about one thing that
+    silently ruins a take: MiniMax-H3 reads double quotation marks as text
+    PRINTED IN THE SHOT and takes spoken words only inside <d> tags, while the
+    LTX/AutoTTS path extracts dialogue FROM double quotes. One shared prompt
+    cannot be right for both - written for LTX it makes H3 paint the line on a
+    wall and invent mumbling for the audio it was never given.
+
+    An engine-specific sibling is used when present: engine="h3" prefers
+    long_story_writer_system_prompt.h3.md. "auto" keeps the previous
+    behaviour exactly, so existing graphs are unaffected.
+    """
+    stem = ("long_story_writer_system_prompt" if "long" in mode
+            else "short_story_writer_system_prompt")
+    if engine and str(engine).lower() == "h3":
+        h3 = _PROMPTS_DIR / f"{stem}.h3.md"
+        if h3.exists():
+            return h3.read_text(encoding="utf-8").strip()
+        logging.warning("[JoyEcho] engine=h3 but %s is missing; falling back "
+                        "to the shared prompt, which marks speech with quotes "
+                        "- H3 will render those as on-screen text", h3.name)
+    fp = _PROMPTS_DIR / f"{stem}.md"
     if fp.exists():
         return fp.read_text(encoding="utf-8").strip()
     raise FileNotFoundError(f"System prompt not found: {fp}")
@@ -3661,7 +3680,14 @@ def _load_refs_rules() -> str:
     return _REFS_RULES_PATH.read_text(encoding="utf-8").strip()
 
 
-_ID_SENTENCE = None
+_ID_SENTENCE = re.compile(
+    r"\b((?:[A-Z][A-Za-z0-9']*(?:_[A-Z])?)"
+    r"|(?:(?:[Tt]he|[Aa])\s+(?:[a-z][a-z0-9-]*\s+){0,2}"
+    r"(?:woman|man|girl|boy|person|figure)))"
+    r" is (?:an? |the )?"
+    r"[^.\n]*?\b(?:year|years|-old|hair|face|build|eyes|eyed|skin|"
+    r"woman|man|girl|boy|teen\w*|adult|elderly|complexion)"
+    r"[^.\n]*\.")
 
 
 # --- local-Ollama context window -------------------------------------------------
@@ -3715,13 +3741,7 @@ def _point_identity_at_refs(prompts, premise=""):
         the render model nothing. Those sentences are now left as written.
     Returns (new_prompts, replaced_count, kept_count)."""
     import re as _re
-    global _ID_SENTENCE, _AGE_PHRASE
-    if _ID_SENTENCE is None:
-        _ID_SENTENCE = _re.compile(
-            r"\b([A-Z][A-Za-z0-9']*(?:_[A-Z])?) is (?:an? |the )?"
-            r"[^.\n]*?\b(?:year|years|-old|hair|face|build|eyes|eyed|skin|"
-            r"woman|man|girl|boy|teen\w*|adult|elderly|complexion)"
-            r"[^.\n]*\.")
+    global _AGE_PHRASE
     if _AGE_PHRASE is None:
         _AGE_PHRASE = _re.compile(
             r"\b((?:[a-z]+-|\d{1,2}-)year-old(?:\s+(?:girl|boy|woman|man))?"
@@ -4124,7 +4144,14 @@ class JoyEcho_LLMEnhance:
                                "the referenced one. Rules in "
                                "prompts/h3_refs_attached_rules.md.",
                 }),
-            },
+                            # APPENDED LAST on purpose: widgets_values is positional,
+                # so a new widget at the very end cannot shift the ones
+                # every saved graph already depends on.
+                "engine": (["auto", "h3"], {
+                    "default": "auto",
+                    "tooltip": "Which video model these prompts are FOR. h3 loads the MiniMax-H3 variant of the system prompt, which tags speech as <d>[English] ...</d> rather than quoting it - H3 reads double quotes as text printed in the shot, so a quoted line gets painted on a wall and the audio is left unscripted. auto keeps the shared prompt, correct for the LTX/AutoTTS path.",
+                }),
+},
         }
 
     @classmethod
@@ -4155,6 +4182,8 @@ class JoyEcho_LLMEnhance:
         fps: float = 25.0,
         join_style: str = "cuts (independent setups)",
         refs_attached: bool = False,
+        # Defaulted so an older saved graph that never sends it still runs.
+        engine: str = "auto",
     ):
         import urllib.request
         import urllib.error
@@ -4244,14 +4273,17 @@ class JoyEcho_LLMEnhance:
                   f"structure will be re-imposed after the call.", flush=True)
 
             _rev_sys = (
-                "You revise shot prompts for a multi-shot AI video harness. You are "
-                "given a JSON object {\"prompts\":[...]} where each array item is ONE "
-                "shot's complete prompt text.\n\n"
+                "You revise shot prompts for a MiniMax H3 multi-shot video harness. "
+                "You are given a JSON object {\"prompts\":[...]} where each array item "
+                "is ONE shot's complete prompt text.\n\n"
                 "HARD RULES - violating any of these makes your output unusable:\n"
                 "1. Return the SAME NUMBER of shots, in the SAME ORDER. Never add, "
                 "drop, merge or reorder shots.\n"
-                "2. If a shot contains a character-identity sentence (an 'ID_A is "
-                "...' sentence describing appearance, wardrobe and voice), copy it "
+                "2. If a shot contains a character-identity sentence (a sentence "
+                "naming the character - by their name or a descriptive label like "
+                "'the dark-haired woman' - and describing their appearance and "
+                "wardrobe, e.g. 'Dana is a woman in her thirties with ...' or 'The "
+                "dark-haired woman is a young woman with ...'), copy it "
                 "BYTE-FOR-BYTE into your revision of that shot - never reword it "
                 "even slightly, because cross-shot identity depends on it being "
                 "character-identical. Not every script uses them; if there is none, "
@@ -4262,17 +4294,30 @@ class JoyEcho_LLMEnhance:
                 "story. You may re-word a line for rhythm, but never change what it "
                 "says or move it to another shot.\n"
                 "4. Keep the capture-medium sentence and the continuous-ambient-sound "
-                "sentence in every shot.\n"
+                "sentence in every shot, and keep each shot's trailing 'Audio:' and "
+                "'Music:' lines intact.\n"
                 "5. Pure ASCII only. No em dashes, smart quotes or unicode.\n\n"
                 "WHAT YOU SHOULD IMPROVE: the physical, spatial and camera writing. "
                 "Make the scene description more concrete and more renderable - named "
                 "materials with a condition ('cracked wet asphalt', 'rust-streaked "
                 "steel'), explicit light sources and their direction and falloff, one "
-                "clear camera move stated in real cinematography terms, and beats that "
-                "are physically possible in the shot's duration. Prefer literal "
-                "physical description over poetic or emotional abstraction; emotion "
-                "belongs only in the performance/voice cue and the dialogue itself. "
-                "Never describe anything the camera cannot see.\n\n"
+                "clear camera move stated in its OWN clause, never mixed into the "
+                "subject's action sentence, with the frame described AFTER the move, "
+                "ONE dominant action arc per shot with beats in order, and beats that "
+                "are physically possible in the shot's duration. Use only the model's "
+                "camera-motion vocabulary (Zoom In, Zoom Out, Push In, Pull Out, Pan "
+                "Left, Pan Right, Truck Left, Truck Right, Tilt Up, Tilt Down, "
+                "Pedestal Up, Pedestal Down, Arc Shot, Tracking Shot, Static Shot, "
+                "Shake Slightly, Shake Strongly, POV, Roll Clockwise, Roll "
+                "Counterclockwise), written as a natural English action inside the "
+                "sentence. Prefer literal physical description over poetic or "
+                "emotional abstraction; emotion belongs only in the performance and "
+                "the dialogue itself. Never describe anything the camera cannot see. "
+                "Keep the capture device's CHARACTER consistent: if the shot is "
+                "documentary or found-footage, preserve and enrich its consumer-"
+                "device behaviors (autofocus hunts, exposure lifts, breath sway, "
+                "sensor noise) and remove cinema-rig vocabulary (dolly, jib, "
+                "crane, gimbal, glide, cinematic, bokeh, slow motion, drone).\n\n"
                 "Output ONLY the JSON object. No commentary, no markdown fence."
             )
             _rev_user = "SCRIPT TO REVISE:\n" + json.dumps(
@@ -4356,7 +4401,7 @@ class JoyEcho_LLMEnhance:
 
             # Re-impose structure: ASCII-fold, then force every identity
             # sentence back to the ORIGINAL wording per shot.
-            _idre = _re2.compile(r"(ID_[A-Z] is .*?with every word\.)", _re2.S)
+            _idre = _ID_SENTENCE
             _fixed, _n_id = [], 0
             for _o, _n in zip(_oshots, _nshots):
                 _n = (_n.replace("—", "-").replace("–", "-")
@@ -4366,8 +4411,8 @@ class JoyEcho_LLMEnhance:
                 _n = "".join(c for c in _n if ord(c) < 128)
                 _om = _idre.search(_o)
                 _nm = _idre.search(_n)
-                if _om and _nm and _om.group(1) != _nm.group(1):
-                    _n = _n.replace(_nm.group(1), _om.group(1), 1)
+                if _om and _nm and _om.group(0) != _nm.group(0):
+                    _n = _n.replace(_nm.group(0), _om.group(0), 1)
                     _n_id += 1
                 elif _om and not _nm:
                     print("[JoyEcho] REVISE: a shot lost its identity sentence; "
@@ -4417,15 +4462,35 @@ class JoyEcho_LLMEnhance:
                 print(f"[JoyEcho] LLMEnhance: no api_key set and {base_url} is a local "
                       f"endpoint - sending a placeholder key.", flush=True)
             else:
-                raise ValueError(
-                    f"API key is required for {base_url}. Enter your provider's key "
-                    f"(OpenAI, DeepSeek, GLM, Gemini, etc.). Local endpoints such as "
-                    f"http://localhost:11434/v1 do not need one - leave this blank.")
+                # Cloud endpoint with a blank key field: check the environment
+                # before failing. Keys must never be typed into the widget -
+                # workflow metadata embeds into every output file.
+                import os as _os
+                _env_names = ["JOYECHO_API_KEY"]
+                if "deepseek" in _host:
+                    _env_names.append("DEEPSEEK_API_KEY")
+                elif "openai" in _host:
+                    _env_names.append("OPENAI_API_KEY")
+                elif "bigmodel" in _host or "zhipu" in _host:
+                    _env_names.append("GLM_API_KEY")
+                _env_key = next((_os.environ[n] for n in _env_names
+                                 if _os.environ.get(n, "").strip()), "").strip()
+                if _env_key:
+                    api_key = _env_key
+                    print(f"[JoyEcho] LLMEnhance: api_key read from environment "
+                          f"(checked: {', '.join(_env_names)}).", flush=True)
+                else:
+                    raise ValueError(
+                        f"API key is required for {base_url}. Set it in the environment "
+                        f"({' or '.join(_env_names)}) before launching ComfyUI - "
+                        f"preferred, keys never touch the graph - or enter your "
+                        f"provider's key. Local endpoints such as "
+                        f"http://localhost:11434/v1 do not need one - leave this blank.")
 
         if system_prompt.strip():
             sys_prompt = system_prompt.strip()
         else:
-            sys_prompt = _load_system_prompt(mode)
+            sys_prompt = _load_system_prompt(mode, engine)
 
         # Chained join styles append the boundary discipline AFTER whatever
         # system prompt is in use - the user's custom prompt included, so a
